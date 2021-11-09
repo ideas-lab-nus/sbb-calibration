@@ -815,8 +815,8 @@ Schedule:Constant,
 Schedule:File,
     SA_off_coil_temperature, !- Name
     SchType_Temperature,     !- Schedule Type Limits Name
-    C:/Users/Cen Chao/Dropbox (Personal)/open-model-data-repo/analysis/summary_table/SA_CHW2.csv,  !- File Name
-    10,                      !- Column Number
+    C:/Users/Cen Chao/Dropbox (Personal)/sbb-calibration/data_raw/Tzone_SAT_FanSpeed.csv,  !- File Name
+    3,                       !- Column Number
     1,                       !- Rows to Skip at Top
     8760,                    !- Number of Hours of Data
     Comma,                   !- Column Separator
@@ -826,8 +826,8 @@ Schedule:File,
 Schedule:File,
     Fan_speed_sche,          !- Name
     Any Number,              !- Schedule Type Limits Name
-    C:/Users/Cen Chao/Dropbox (Personal)/open-model-data-repo/analysis/summary_table/SA_CHW2.csv,  !- File Name
-    8,                       !- Column Number
+    C:/Users/Cen Chao/Dropbox (Personal)/sbb-calibration/data_raw/Tzone_SAT_FanSpeed.csv,  !- File Name
+    2,                       !- Column Number
     1,                       !- Rows to Skip at Top
     8760,                    !- Number of Hours of Data
     Comma,                   !- Column Separator
@@ -836,9 +836,9 @@ Schedule:File,
 
 Schedule:File,
     Schfile_room3_Tset,      !- Name
-    Any Number,              !- Schedule Type Limits Name
-    C:/Users/Cen Chao/Dropbox (Personal)/open-model-data-repo/analysis/summary_table/SA_CHW2.csv,  !- File Name
-    28,                      !- Column Number
+    SchType_Temperature,     !- Schedule Type Limits Name
+    C:/Users/Cen Chao/Dropbox (Personal)/sbb-calibration/data_raw/Tzone_SAT_FanSpeed.csv,  !- File Name
+    4,                       !- Column Number
     1,                       !- Rows to Skip at Top
     8760,                    !- Number of Hours of Data
     Comma,                   !- Column Separator
