@@ -1,0 +1,42 @@
+---
+title: "free floating calibration"
+author: "Adrian Chong"
+date: "11/11/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R packages
+
+```{r, message=FALSE}
+library(eplusr)
+library(tidyverse)
+library(ggplot2)
+library(here)
+```
+
+## Weather file
+
+```{r weather}
+path_epw <- here("data", "epw", "testbed.epw")
+epw <- read_epw(path_epw)
+```
+
+## Model 1
+
+Initial model that is based on as-built drawings and specifications.
+
+```{r model_specs_read_idf}
+model_specs <- read_idf(here("data", "idf", "set1_specs.idf"))
+```
+
+Run the model
+
+```{r model_specs_run_idf}
+job_specs <- model_specs$run(weather = epw, dir = tempdir())
+```
+
+Check model against measured data
