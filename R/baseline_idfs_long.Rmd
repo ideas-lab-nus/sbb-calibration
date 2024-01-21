@@ -1,0 +1,2740 @@
+---
+title: "free floating calibration"
+author: "Adrian Chong"
+date: "11/11/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R packages
+
+```{r, message=FALSE}
+library(eplusr)
+library(tidyverse)
+library(ggplot2)
+library(here)
+library(lubridate)
+library(stringr)
+library(fs)
+library(purrr)
+library(data.table)
+library(psychrolib)
+library(plotly)
+library(frost)
+library(dplyr)
+library(rlist)
+
+for (f in fs::dir_ls(here("fun"), glob = "*.R")) source(f)
+
+options(datatable.print.class = TRUE)
+```
+
+## Weather file
+
+```{r weather}
+path_epw <- here("data", "epw", "SGP_Singapore_sbb3.epw")
+epw <- read_epw(path_epw)
+# ******************************************************************************
+# Check the weather file
+path_epw1 <- here("data", "epw", "testbed1.epw")
+path_epw2 <- here("data", "epw", "SGP_Singapore_sbb2.epw")
+path_epw3 <- here("data", "epw", "SGP_Singapore_experiment_whole.epw")
+
+epw1 <- read_epw(path_epw1)
+epw2 <- read_epw(path_epw2)
+epw3 <- read_epw(path_epw3)
+
+
+epw_dt1 <- epw1$data()
+epw_dt2 <- epw2$data()
+epw_dt3 <- epw3$data()
+
+nonequal_dt2 <- data.table(No=integer(),
+                 nonequal=character())
+
+for (i in (8:36)) {
+  nonequal <- all_equal(epw_dt1[datetime >= lubridate::as_datetime("2021-06-19 00:00:00") & datetime <= lubridate::as_datetime("2021-06-21 00:06:00"), names(epw_dt1)[i], with = FALSE],
+                            epw_dt2[datetime >= lubridate::as_datetime("2021-06-19 00:00:00") & datetime <= lubridate::as_datetime("2021-06-21 00:06:00"), names(epw_dt2)[i], with = FALSE])
+  nonequal_one <- data.table(No=i, nonequal=nonequal)
+  nonequal_dt2 <- rbind(nonequal_dt2, nonequal_one)
+}
+# ******************************************************************************
+```
+
+## Model 1 (model_specs)
+
+Initial model that is based on as-built drawings and specifications.
+
+```{r model_specs_read_idf}
+model_specs <- read_idf(here("data", "idf", "set1_specs.idf"))
+```
+
+Run the model
+
+```{r model_specs_run_idf}
+job_specs <- model_specs$run(weather = epw, dir = tempdir())
+```
+
+Check model against measured data
+
+```{r}
+# Troom_dt <- job_specs$report_data(job_specs$report_data_dict()[
+#   units == "C" & name == "Zone Mean Air Temperature" & key_value == "ROOM3"])
+level <- 0
+
+Troom_dt <- job_specs$report_data(job_specs$report_data_dict()[name == "Zone Mean Air Temperature" & key_value == "ROOM3" | name == "Site Outdoor Air Drybulb Temperature"])
+
+Troom_dt <- Troom_dt[
+  datetime >= lubridate::as_datetime("2021-06-19 00:00:00") & datetime <= lubridate::as_datetime("2021-06-21 00:00:00"), ]
+
+# Troom_dt <- Troom_dt[
+#   datetime >= lubridate::as_datetime("2021-06-19 00:00:00") & datetime <= lubridate::as_datetime("2021-06-21 06:00:00"), ]
+
+pi_path <- here("data", "pi", "pi_data_May10_July15.csv")
+pi_hourly_dt <- get_pi_refined_dt(pi_path)
+
+evaluate_diff(pi_hourly_dt, Troom_dt)
+plot_diff(pi_hourly_dt, Troom_dt, level)
+```
+## Model 2
+
+Model 2 is based on model_specs and is updated by using no sun no wind boundary conditions for all exterior surfaces
+
+```{r}
+# Modify building surface detailed sun expose and wind expose conditions
+# extract data of all non transparent surfaces
+surf_details_dt <- model_specs$to_table(class = "BuildingSurface:Detailed", wide = TRUE, string_value = FALSE)
+# modify sun exposed condition
+surf_details_dt[`Outside Boundary Condition` %in% c("Ground", "Outdoors"), `Sun Exposure` := "NoSun"]
+surf_details_dt[`Outside Boundary Condition` %in% c("Ground", "Outdoors"), `Wind Exposure` := "NoWind"]
+surf_details_dt[`Outside Boundary Condition` == "Ground", `Outside Boundary Condition` := "Outdoors"]
+
+# update object using the tidy table
+model_specs$update(dt_to_load(surf_details_dt))
+# Save the modified model
+model_specs$save(here("data", "idf", "set2_boundary_conditions.idf"))
+```
+
+Run the model
+
+```{r model_specs_run_idf}
+# model_specs <- read_idf(here("data", "idf", "set2_boundary_conditions.idf"))
+job_model2 <- model_specs$run(weather = epw, dir = tempdir())
+```
+Check model against measured data
+
+```{r}
+# Troom_dt2 <- job_model2$report_data(job_model2$report_data_dict()[
+#   units == "C" & name == "Zone Mean Air Temperature" & key_value == "ROOM3"])
+
+Troom_dt2 <- job_model2$report_data(job_model2$report_data_dict()[name == "Zone Mean Air Temperature" & key_value == "ROOM3" | name == "Site Outdoor Air Drybulb Temperature"])
+
+Troom_dt2 <- Troom_dt2[
+  datetime >= lubridate::as_datetime("2021-06-19 00:00:00") & datetime <= lubridate::as_datetime("2021-06-21 00:00:00"), ]
+
+# pi_path <- here("data", "pi", "pi_data_May10_July15.csv")
+# pi_hourly_dt <- get_pi_refined_dt(pi_path)
+
+evaluate_diff(pi_hourly_dt, Troom_dt2)
+plot_diff(pi_hourly_dt, Troom_dt2)
+```
+
+## Model 3
+
+Model 3 is based on model 2 and is updated by the measured U values for the envelopes
+
+```{r}
+# Update "M3_Access_Floor" with measured U value (Bolted_Stringer)
+# Delete current Material, Bolted_Stringer
+model_specs$del("Bolted_Stringer", .force = TRUE)
+
+# Add Material:NoMass, Bolted_Stringer
+# (The code below doesn't work)
+# model_specs$add(
+#   list("Material:NoMass" = list(..1 = "Bolted_Stringer", ..2 = "MediumRough", ..3 = 0.13986, ..4 = 0.9, ..5 = 0.7, ..6 = 0.7))
+# )
+
+bolted_stringer <- list("Material:NoMass" = list(
+            ..1 = "Bolted_Stringer", ..2 = "MediumRough", ..3 = 0.13986, ..4 = 0.9, ..5 = 0.7, ..6 = 0.7)
+            )
+model_specs$add(bolted_stringer)
+
+# Modify Dagard_SM60 thermal resistance
+model_specs$set(
+  Dagard_SM60 = list(name = "Dagard_SM60", ..2 = "Rough", ..3 = 0.84746, ..4 = 0.9, ..5 = 0.7, ..6 = 0.7)
+  )
+
+# Modify model_specs$`WindowMaterial:SimpleGlazingSystem`$Double_Glazed_Unit
+# Change U value from 1.51 to 3.96
+model_specs$set(
+  Double_Glazed_Unit = list(name = "Double_Glazed_Unit", ..2 = 3.96, ..3 = 0.235, ..4 = 0.123)
+  )
+
+# Save the modified model
+model_specs$save(here("data", "idf", "set3_ufactor.idf"))
+# model_specs$save(here("data", "idf", "design_decision", "set3_ufactor.idf"))
+```
+
+Run the model
+
+```{r model_specs_run_idf}
+model_specs <- read_idf(here("data", "idf", "set3_ufactor.idf"))
+job_model3 <- model_specs$run(weather = epw, dir = tempdir())
+```
+
+Check model against measured data
+
+```{r}
+Troom_dt3 <- job_model3$report_data(job_model3$report_data_dict()[
+  units == "C" & name == "Zone Mean Air Temperature" & key_value == "ROOM3"])
+Troom_dt3 <- Troom_dt3[
+  datetime >= lubridate::as_datetime("2021-06-19 00:00:00") & datetime <= lubridate::as_datetime("2021-06-21 00:06:00"), ]
+
+pi_path <- here("data", "pi", "pi_data_May10_July15.csv")
+pi_hourly_dt <- get_pi_refined_dt(pi_path)
+
+evaluate_diff(pi_hourly_dt, Troom_dt3)
+plot_diff(pi_hourly_dt, Troom_dt3)
+```
+
+## Model 4
+
+Model 4 is based on model 3 and is updated by the measured infiltration rate for room1-4
+
+```{r}
+model_specs$set(
+  Infiltration_Room1 = list(name = "Infiltration_Room1", ..2 = "Room1", ..3 = "Always_On", ..4 = "AirChanges/Hour", ..5 = "", ..6 = "", ..7 = "", ..8 = 0.297)
+  )
+
+model_specs$set(
+  Infiltration_Room2 = list(name = "Infiltration_Room2", ..2 = "Room2", ..3 = "Always_On", ..4 = "AirChanges/Hour", ..5 = "", ..6 = "", ..7 = "", ..8 = 0.4903)
+  )
+
+model_specs$set(
+  Infiltration_Room3 = list(name = "Infiltration_Room3", ..2 = "Room3", ..3 = "Always_On", ..4 = "AirChanges/Hour", ..5 = "", ..6 = "", ..7 = "", ..8 = 0.1053)
+  )
+
+model_specs$set(
+  Infiltration_Room4 = list(name = "Infiltration_Room4", ..2 = "Room4", ..3 = "Always_On", ..4 = "AirChanges/Hour", ..5 = "", ..6 = "", ..7 = "", ..8 = 0.297)
+  )
+
+# Save the modified model
+model_specs$save(here("data", "idf", "set4_infiltration.idf"))
+# model_specs$save(here("data", "idf", "design_decision", "M2_ufactor_infiltration.idf"))
+```
+
+Run the model
+
+```{r model_specs_run_idf}
+job_model4 <- model_specs$run(weather = epw, dir = tempdir())
+```
+
+Check model against measured data
+
+```{r}
+Troom_dt4 <- job_model4$report_data(job_model4$report_data_dict()[
+  units == "C" & name == "Zone Mean Air Temperature" & key_value == "ROOM3"])
+Troom_dt4 <- Troom_dt4[
+  datetime >= lubridate::as_datetime("2021-06-19 00:00:00") & datetime <= lubridate::as_datetime("2021-06-21 00:06:00"), ]
+
+pi_path <- here("data", "pi", "pi_data_May10_July15.csv")
+pi_hourly_dt <- get_pi_refined_dt(pi_path)
+
+evaluate_diff(pi_hourly_dt, Troom_dt4)
+plot_diff(pi_hourly_dt, Troom_dt4)
+```
+
+## Model 5
+
+Model 5 is based on model 4 and is updated by changing SurfaceConvectionAlgorithm:Outside from "DOE-2" to "SimpleCombined"
+
+```{r}
+model_specs$`SurfaceConvectionAlgorithm:Outside`$Algorithm <- "SimpleCombined"
+
+# Save the modified model
+model_specs$save(here("data", "idf", "set5_chtc.idf"))
+model_specs$save(here("data", "idf", "set2_chtc.idf"))
+
+# model_specs$save(here("data", "idf", "design_decision", "M3_CHTC.idf"))
+```
+Run the model
+
+```{r model_specs_run_idf}
+job_model5 <- model_specs$run(weather = epw, dir = tempdir())
+```
+
+Check model against measured data
+
+```{r}
+# Troom_dt5 <- job_model5$report_data(job_model5$report_data_dict()[
+#   units == "C" & name == "Zone Mean Air Temperature" & key_value == "ROOM3"])
+
+Troom_dt5 <- job_model5$report_data(job_model5$report_data_dict()[name == "Zone Mean Air Temperature" & key_value == "ROOM3" | name == "Site Outdoor Air Drybulb Temperature"])
+
+Troom_dt5 <- Troom_dt5[
+  datetime >= lubridate::as_datetime("2021-06-19 00:00:00") & datetime <= lubridate::as_datetime("2021-06-21 00:00:00"), ]
+
+pi_path <- here("data", "pi", "pi_data_May10_July15.csv")
+pi_hourly_dt <- get_pi_refined_dt(pi_path)
+
+evaluate_diff(pi_hourly_dt, Troom_dt5)
+plot_diff(pi_hourly_dt, Troom_dt5, level = 4)
+```
+
+## Model with HVAC system
+
+Set 6 series of models are based on Model 5 and HVAC system as-built drawings and specifications.
+
+Read schedule file and get the IDF ready for simulation
+
+```{r set 6 series of ACmodels}
+set6_lst <- c("set6_zone22_sat11_0521.idf", 
+             "set6_zone22_sat13_0517.idf", 
+             "set6_zone22_sat15_0518.idf",
+             "set6_zone24_sat13_0524.idf", 
+             "set6_zone24_sat15_0704.idf", 
+             "set6_zone24_sat17_0519.idf",
+             "set6_zone24_sat19_0520.idf", 
+             "set6_zone26_sat13_0526.idf", 
+             "set6_zone26_sat15_0528.idf")
+
+# set7_lst <- c("set6_zone22_sat11_0521.idf", 
+#              "set6_zone22_sat13_0517.idf", 
+#              "set6_zone24_sat17_0519.idf")
+
+set6_lst <- c("set6_zone22_sat11_0521.idf")
+set7_lst <- c("set7_zone22_sat11_0521.idf")
+set7_lst <- c("set7_zone22_sat11_0521_OAOffEMSSA.idf")
+
+set8_lst <- gsub(".*\\/", "", names(path_idfs))
+
+schefile_path <- here("data", "idf", "run", "new_sche_file2_2.csv")
+schefile_dt <- fread(schefile_path)
+
+schefile_dt$FAN_VOL_FLOW <- schefile_dt$FAN_MASS_FLOW / 1.204
+max_FAN_VFR <- max(schefile_dt$FAN_VOL_FLOW)
+schefile_dt$FAN_VOL_FLOW_ratio <- schefile_dt$FAN_VOL_FLOW / max_FAN_VFR
+
+fwrite(schefile_dt, here("data", "idf", "run", "new_sche_file2_2.csv"))
+# ******************************************************************************
+# No need to run, just for generate coil inlet node SA mass flow rate
+# Add column Fan_Flow to new_sche_file2.csv
+schefile_dt$FAN_MASS_FLOW <- 0.08548
+schefile_dt[SS4_SFAN1_REF_est > 10 & SS4_SFAN1_REF_est <= 20, FAN_MASS_FLOW := 0.19245]
+schefile_dt[SS4_SFAN1_REF_est > 20 & SS4_SFAN1_REF_est <= 30, FAN_MASS_FLOW := 0.41505]
+schefile_dt[SS4_SFAN1_REF_est > 30 & SS4_SFAN1_REF_est <= 40, FAN_MASS_FLOW := 0.61694]
+schefile_dt[SS4_SFAN1_REF_est > 40 & SS4_SFAN1_REF_est <= 45, FAN_MASS_FLOW := 0.79018]
+schefile_dt[SS4_SFAN1_REF_est > 45 & SS4_SFAN1_REF_est <= 50, FAN_MASS_FLOW := 0.97978]
+
+fwrite(schefile_dt, here("data", "idf", "run", "new_sche_file2_2.csv"))
+# ******************************************************************************
+
+read_idf_lst(set7_lst, schefile_path)
+```
+
+Modify the .epw weather file
+
+```{r}
+# Recreate the weather file
+# path_epws <- fs::dir_ls(here("data", "idf", "run"), recurse = TRUE, regexp = ".*10\\.epw")
+
+path_epws <- here::here("data/epw/SGP_Singapore_sbb.epw")
+epw <- read_epw(path_epws)
+epw_dt <- epw$data(start_year = 2021)
+
+wea_start <- lubridate::ymd_hms("2021-06-18 17:00:00")
+wea_end <- lubridate::ymd_hms("2021-07-05 10:00:00")
+
+exp_wea <- data.table::fread(here::here("data/epw/exp_weather.csv"))
+# head(exp_wea)
+# ******************************************************************************
+# Just check, no need to run
+# Process the measured weather data
+exp_wea$datetime <- ymd_hm(exp_wea$datetime)
+# exp_wea$hour <- hour(exp_wea$datetime)
+exp_wea_hourly <- aggregate_by_hour(exp_wea)
+exp_wea <- exp_wea_hourly
+
+temp <- exp_wea$O3A_TEMP
+rh <- exp_wea$O3A_RH
+O3A_DPT <- calcDewPoint(rh,temp,mode="B")
+
+temp <- exp_wea$O3B_TEMP
+rh <- exp_wea$O3B_RH
+O3B_DPT <- calcDewPoint(rh,temp,mode="B")
+
+exp_wea$O3A_DPT <- O3A_DPT
+exp_wea$O3B_DPT <- O3B_DPT
+
+temp_mean = apply(exp_wea[, c("O3A_TEMP", "O3B_TEMP")], 1, mean)
+rh_mean = apply(exp_wea[, c("O3A_RH", "O3B_RH")], 1, mean)
+dPt_mean <- apply(exp_wea[, c("O3A_DPT", "O3B_DPT")], 1, mean)
+
+exp_wea[, temp_mean := temp_mean]
+exp_wea[, rh_mean := rh_mean]
+exp_wea[, dPt_mean := dPt_mean]
+
+# Here Here for weather file
+# Read the template weather file
+path_epw <- here::here("data", "epw", "SGP_Singapore.486980_IWEC.epw")
+epw_SG <- read_epw(path_epw)
+# epw <- epw$data(start_year = 2021)
+epw_dt <- epw_SG$data(start_year = 2021)
+# ------------------------------------------------------------------------------
+# Modify the template weathe file
+wea_start <- exp_wea$datetime[1]
+wea_end <- exp_wea$datetime[length(exp_wea$datetime)]
+# length = 402
+
+epw_dt[datetime >= wea_start & datetime <= wea_end, dry_bulb_temperature := exp_wea$temp_mean]
+epw_dt[datetime >= wea_start & datetime <= wea_end, dew_point_temperature := exp_wea$dPt_mean]
+epw_dt[datetime >= wea_start & datetime <= wea_end, relative_humidity := exp_wea$rh_mean]
+# ******************************************************************************
+# temp <- exp_wea$O3A_TEMP
+# rh <- exp_wea$O3A_RH
+# O3A_DPT <- calcDewPoint(rh,temp,mode="B")
+# 
+# temp <- exp_wea$O3B_TEMP
+# rh <- exp_wea$O3B_RH
+# O3B_DPT <- calcDewPoint(rh,temp,mode="B")
+# 
+# exp_wea$O3A_DPT <- O3A_DPT
+# exp_wea$O3B_DPT <- O3B_DPT
+# 
+# temp_mean = apply(exp_wea[, c("O3A_TEMP", "O3B_TEMP")], 1, mean)
+# rh_mean = apply(exp_wea[, c("O3A_RH", "O3B_RH")], 1, mean)
+# dPt_mean <- apply(exp_wea[, c("O3A_DPT", "O3B_DPT")], 1, mean)
+# ------------------------------------------------------------------------------
+# wea_dt <- data.table::data.table(datetime = exp_wea$datetime, temp = temp_mean,
+#                        rh = rh_mean, dpt = dPt_mean)
+# wea_dt$datetime <- lubridate::ymd_hm(wea_dt$datetime)
+# 
+# # "dry_bulb_temperature" "dew_point_temperature" "relative_humidity"
+# wea_dt$date <- lubridate::date(wea_dt$datetime)
+# wea_dt$hour <- lubridate::hour(wea_dt$datetime)
+# 
+# cols_val <- c("temp", "rh", "dpt")
+# wea_dt2 <- wea_dt[, lapply(.SD, mean), .SDcols = cols_val, c("date", "hour")]
+# wea_dt2$datetime <- lubridate::ymd_h(
+#     stringr::str_c(wea_dt2$date, wea_dt2$hour, sep = " "))
+# wea_dt2 <- dplyr::select(wea_dt2, "datetime", everything())
+
+# wea_start <- wea_dt2$datetime[1]
+# wea_end <- wea_dt2$datetime[length(wea_dt2$datetime)]
+
+# epw_dt[datetime >= wea_start & datetime <= wea_end, dry_bulb_temperature := wea_dt2$temp]
+# epw_dt[datetime >= wea_start & datetime <= wea_end, dew_point_temperature := wea_dt2$dpt]
+# epw_dt[datetime >= wea_start & datetime <= wea_end, relative_humidity := wea_dt2$rh]
+# ------------------------------------------------------------------------------
+# Update the EPW weather file
+# epw_v1 <- epw$set(epw_dt, realyear = TRUE)
+# epw_v1$num_period()
+# epw_v1$abnormal_data(cols = c("dry_bulb_temperature", "dew_point_temperature",
+#                             "relative_humidity", "direct_normal_radiation",
+#                             "diffuse_horizontal_radiation", "global_horizontal_radiation"),
+#                   type = "out_of_range")
+# 
+# epw_v1$redundant_data()
+# epw_v1$save(path = here::here("data/epw/SGP_Singapore_sbb.epw"))
+# ******************************************************************************
+# Further modify the .epw weather file
+epw_dt2a <- epw_dt[datetime >= wea_start & datetime <= wea_end, ]
+epw_dt2a_daily_hourly <- aggregate_by_week_hour(epw_dt2a)
+
+epw_dt2b <- epw_dt[datetime < wea_start | datetime > wea_end, ]
+
+epw_dt2a$week_day <- wday(epw_dt2a$datetime)
+epw_dt2b$week_day <- wday(epw_dt2b$datetime)
+
+for (i in seq(24)) {
+  epw_dt2b[week_day == 1, ][hour == i, ]$dry_bulb_temperature <- epw_dt2a_daily_hourly[week_day == 1 & hour == i,]$dry_bulb_temperature
+  epw_dt2b[week_day == 2, ][hour == i, ]$dry_bulb_temperature <- epw_dt2a_daily_hourly[week_day == 2 & hour == i,]$dry_bulb_temperature
+  epw_dt2b[week_day == 3, ][hour == i, ]$dry_bulb_temperature <- epw_dt2a_daily_hourly[week_day == 3 & hour == i,]$dry_bulb_temperature
+  epw_dt2b[week_day == 4, ][hour == i, ]$dry_bulb_temperature <- epw_dt2a_daily_hourly[week_day == 4 & hour == i,]$dry_bulb_temperature
+  epw_dt2b[week_day == 5, ][hour == i, ]$dry_bulb_temperature <- epw_dt2a_daily_hourly[week_day == 5 & hour == i,]$dry_bulb_temperature
+  epw_dt2b[week_day == 6, ][hour == i, ]$dry_bulb_temperature <- epw_dt2a_daily_hourly[week_day == 6 & hour == i,]$dry_bulb_temperature
+  epw_dt2b[week_day == 7, ][hour == i, ]$dry_bulb_temperature <- epw_dt2a_daily_hourly[week_day == 7 & hour == i,]$dry_bulb_temperature
+}
+
+for (i in seq(24)) {
+  epw_dt2b[week_day == 1, ][hour == i, ]$dew_point_temperature <- epw_dt2a_daily_hourly[week_day == 1 & hour == i,]$dew_point_temperature
+  epw_dt2b[week_day == 2, ][hour == i, ]$dew_point_temperature <- epw_dt2a_daily_hourly[week_day == 2 & hour == i,]$dew_point_temperature
+  epw_dt2b[week_day == 3, ][hour == i, ]$dew_point_temperature <- epw_dt2a_daily_hourly[week_day == 3 & hour == i,]$dew_point_temperature
+  epw_dt2b[week_day == 4, ][hour == i, ]$dew_point_temperature <- epw_dt2a_daily_hourly[week_day == 4 & hour == i,]$dew_point_temperature
+  epw_dt2b[week_day == 5, ][hour == i, ]$dew_point_temperature <- epw_dt2a_daily_hourly[week_day == 5 & hour == i,]$dew_point_temperature
+  epw_dt2b[week_day == 6, ][hour == i, ]$dew_point_temperature <- epw_dt2a_daily_hourly[week_day == 6 & hour == i,]$dew_point_temperature
+  epw_dt2b[week_day == 7, ][hour == i, ]$dew_point_temperature <- epw_dt2a_daily_hourly[week_day == 7 & hour == i,]$dew_point_temperature
+}
+
+for (i in seq(24)) {
+  epw_dt2b[week_day == 1, ][hour == i, ]$relative_humidity <- epw_dt2a_daily_hourly[week_day == 1 & hour == i,]$relative_humidity
+  epw_dt2b[week_day == 2, ][hour == i, ]$relative_humidity <- epw_dt2a_daily_hourly[week_day == 2 & hour == i,]$relative_humidity
+  epw_dt2b[week_day == 3, ][hour == i, ]$relative_humidity <- epw_dt2a_daily_hourly[week_day == 3 & hour == i,]$relative_humidity
+  epw_dt2b[week_day == 4, ][hour == i, ]$relative_humidity <- epw_dt2a_daily_hourly[week_day == 4 & hour == i,]$relative_humidity
+  epw_dt2b[week_day == 5, ][hour == i, ]$relative_humidity <- epw_dt2a_daily_hourly[week_day == 5 & hour == i,]$relative_humidity
+  epw_dt2b[week_day == 6, ][hour == i, ]$relative_humidity <- epw_dt2a_daily_hourly[week_day == 6 & hour == i,]$relative_humidity
+  epw_dt2b[week_day == 7, ][hour == i, ]$relative_humidity <- epw_dt2a_daily_hourly[week_day == 7 & hour == i,]$relative_humidity
+}
+
+epw_dt2c <- rbind(epw_dt2b, epw_dt2a, use.names=TRUE)
+epw_dt2c <- setorder(epw_dt2c, datetime)
+
+# Update the EPW weather file
+epw_dt$dry_bulb_temperature <- epw_dt2c$dry_bulb_temperature
+epw_dt$dew_point_temperature <- epw_dt2c$dew_point_temperature
+epw_dt$relative_humidity <- epw_dt2c$relative_humidity
+
+# Update the EPW weather file
+epw_V2 <- epw_SG$set(epw_dt, realyear = TRUE)
+
+
+# Check the EPW weather file (redundant data?)
+epw_V2$num_period()
+epw_V2$abnormal_data(cols = c("dry_bulb_temperature", "dew_point_temperature",
+                            "relative_humidity", "direct_normal_radiation",
+                            "diffuse_horizontal_radiation", "global_horizontal_radiation"),
+                  type = "out_of_range")
+
+epw_V2$redundant_data()
+epw_V2$save(path = here::here("data/epw/SGP_Singapore_sbb3.epw"), overwrite = TRUE)
+
+path_epw <- here::here("data/epw/SGP_Singapore_sbb3.epw")
+epw_sbb3 <- read_epw(path_epw)
+epw_sbb3_dt <- epw_sbb3$data()
+
+# check if NA by column
+apply(exp_wea, 2, function(x) any(is.na(x)))
+
+p_epw_RH2 <- ggplot(epw_daily_hourly_dt, aes(hour, relative_humidity, color=as.factor(week_day))) +
+  geom_line() +
+  geom_point(size=4, alpha=0.5)
+  # facet_wrap(~week_day)
+    # scale_x_datetime(breaks=scales::date_breaks("12 hours"),
+    #                  labels = function(x) stringr::str_wrap(x, width = 4))
+
+p_epw_RH3 <- ggplot(epw_dt3, aes(hour, relative_humidity, color=as.factor(week_day))) +
+  geom_line()
+  # geom_point(size=4, alpha=0.5)
+# ******************************************************************************
+# epw_dt[datetime >= wea_start & datetime <= wea_end, dry_bulb_temperature := 27]
+
+epw2 <- epw$set(epw_dt, realyear = TRUE)
+epw2$num_period()
+epw2$abnormal_data(cols = c("dry_bulb_temperature", "dew_point_temperature",
+                            "relative_humidity", "direct_normal_radiation",
+                            "diffuse_horizontal_radiation", "global_horizontal_radiation"),
+                  type = "out_of_range")
+
+epw2$redundant_data()
+epw2$save(path = here::here("data", "idf", "run", "testbed_altex.epw"))
+
+# Visualize the .epw weather data
+p_epw_RH <- ggplot(epw_dt[datetime >= lubridate::ymd_hm("2021-05-21 00:00") &
+                                     datetime <= lubridate::ymd_hm("2021-05-21 23:00"), ], aes(hour, relative_humidity)) +
+    geom_line() +
+    geom_point(size=6)
+    # scale_x_datetime(breaks=scales::date_breaks("12 hours"),
+    #                  labels = function(x) stringr::str_wrap(x, width = 4))
+
+```
+
+Run group simulation
+
+```{r}
+# path_idfs <- fs::dir_ls(here("data", "idf"), recurse = TRUE, regexp = ".*\\/set7.*b\\.idf")
+# path_epws <- fs::dir_ls(here("data", "epw"), recurse = TRUE, glob = "*.epw")
+
+path_idfs <- fs::dir_ls(here("data", "idf", "run"), recurse = TRUE, regexp = ".*\\/set7.*OAOffEMSSAb\\.idf")
+path_idfs <- fs::dir_ls(here("data", "idf", "run"), recurse = TRUE, regexp = ".*\\/set9.*OAOffEMSsetSAbyFanHz[457]\\.idf")
+path_idfs <- fs::dir_ls(here("data", "idf", "run"), recurse = TRUE, regexp = ".*\\/set9.*OAOffEMSsetSAbyFanHz7_desk\\.idf")
+
+# set9_zone22_sat11_0521_OAOffEMSsetSAbyFanHz7_desk
+
+# path_idfs <- fs::dir_ls(here("data", "idf", "run"), recurse = TRUE, regexp = "set7.*CAV3-1-7_check\\.idf")
+path_idfs <- fs::dir_ls(here("data", "idf", "run"), recurse = TRUE, regexp = "set7.*CAV3-1-8L\\.idf")
+path_idfs <- fs::dir_ls(here("data", "idf", "run"), recurse = TRUE, regexp = "set7.*CAV3-2_base\\.idf")
+path_idfs <- fs::dir_ls(here("data", "idf", "run"), recurse = TRUE, regexp = "set7.*CAV3-2_model1_S4\\.idf")
+
+# path_idfs <- fs::dir_ls(here("data", "idf", "run"), recurse = TRUE, regexp = ".*\\/set8.*\\.idf")
+
+# path_epws <- fs::dir_ls(here("data", "idf", "run"), recurse = TRUE, regexp = ".*1\\.epw")
+# SGP_Singapore_sbb2.epw
+path_epws <- fs::dir_ls(here("data", "idf", "run"), recurse = TRUE, regexp = ".*sbb2\\.epw")
+# path_epws <- fs::dir_ls(here("data", "idf", "run"), recurse = TRUE, regexp = ".*_altex\\.epw")
+# path_epws <- fs::dir_ls(here("data", "idf", "run"), recurse = TRUE, glob = "*.epw")
+
+group <- group_job(path_idfs, path_epws)
+group_job(lapply(path_idfs, read_idf), lapply(path_epws, read_epw))
+group$run(tempdir(), echo = FALSE)
+```
+
+Collect idf simulation results
+
+```{r}
+ep_dt2 <- group$report_data(
+  which = NULL,
+  key_value = c("ROOM3", 
+                "NODEOUTLET_AIR_VAV3", 
+                "NODE_RETURNAIR_ROOM3",
+                
+                "NODEOUTLET_OUTAIR2",
+                "NODEOUTLET_AIR_CLGCOIL_AHU2",
+                "NODEOUTLET_AIR_SUPPLY2",
+                
+                "NODEINLET_WATER_CLGCOIL_AHU2",
+                "NODEOUTLET_WATER_CLGCOIL_AHU2",
+                "NODELST_OUTAIR2"
+                ),
+  name = NULL,
+  year = NULL,
+  tz = "UTC",
+  all = FALSE,
+  wide = TRUE,
+  period = NULL,
+  month = NULL,
+  day = NULL,
+  hour = NULL,
+  minute = NULL,
+  interval = NULL,
+  simulation_days = NULL,
+  day_type = NULL,
+  environment_name = NULL
+)
+
+ep_dt2_plus <- group$report_data(
+  which = NULL,
+  key_value = NULL,
+  name = c("Site Outdoor Air Drybulb Temperature",
+           "Site Outdoor Air Humidity Ratio",
+           "Site Outdoor Air Relative Humidity",
+           "Site Outdoor Air Dewpoint Temperature",
+           
+           "Air System Outdoor Air Flow Fraction",
+           "Air System Outdoor Air Mass Flow Rate",
+                      
+           "Fan Electricity Rate",
+           "Fan Heat Gain to Air",
+           "Fan Air Mass Flow Rate",
+           
+           "Zone Air Terminal VAV Damper Position",
+           
+           "Cooling Coil Total Cooling Energy",
+           "Cooling Coil Source Side Heat Transfer Energy",
+           "Cooling Coil Total Cooling Rate",
+           "Cooling Coil Sensible Cooling Rate",
+           
+           "Plant Supply Side Inlet Mass Flow Rate",
+           "Plant Supply Side Inlet Temperature",
+           "Plant Supply Side Outlet Temperature",
+           "Schedule Value"
+           ),
+  year = NULL,
+  tz = "UTC",
+  all = FALSE,
+  wide = TRUE,
+  period = NULL,
+  month = NULL,
+  day = NULL,
+  hour = NULL,
+  minute = NULL,
+  interval = NULL,
+  simulation_days = NULL,
+  day_type = NULL,
+  environment_name = NULL
+)
+
+ep_dt2 <- merge(ep_dt2, ep_dt2_plus, by = c("index", "case", "Date/Time"))
+ep_dt3 <- ep_dt2 %>% group_by(index) %>% mutate(id = 1:n())
+names(ep_dt3)[which(names(ep_dt3) == "Date/Time")] <- "datetime"
+ep_dt3 <- ep_dt3 %>% group_by(index) %>% mutate(CHW_dT_sim = `NODEOUTLET_WATER_CLGCOIL_AHU2:System Node Temperature [C](Hourly)` - `NODEINLET_WATER_CLGCOIL_AHU2:System Node Temperature [C](Hourly)`)
+ep_dt3 <- select(ep_dt3, "id", "datetime", "index", "case", everything())
+ep_dt3$datetime <- ymd_hms(str_c("2021", ep_dt3$datetime, sep = "/"))
+ep_dt3$case <- gsub(".*\\/", "", ep_dt3$case)
+
+# fwrite(ep_dt3, file = here("data", "csv", "ep_dt.csv"))
+```
+
+Collect PI data (measured results)
+
+```{r}
+pi_path <- here("data", "pi", "pi_data_May10_July15.csv")
+
+begin_lst <- c("2021-07-04 00:00:00")
+
+begin_lst <- c("2021-05-21 00:00:00", "2021-05-17 00:00:00", "2021-05-18 00:00:00",
+              "2021-05-24 00:00:00", "2021-07-04 00:00:00", "2021-05-19 00:00:00",
+              "2021-05-20 00:00:00", "2021-05-26 00:00:00", "2021-05-28 00:00:00")
+# 
+# begin_lst <- c("2021-05-21 00:00:00", "2021-05-17 00:00:00", "2021-05-19 00:00:00")
+
+begin_lst <- c("2021-05-21 00:00:00")
+begin_lst <- c("2021-06-28 10:00:00")
+# ------------------------------------------------------------------------------
+end_lst <- c("2021-07-05 00:00:00")
+
+end_lst <- c("2021-05-22 00:00:00", "2021-05-18 00:00:00", "2021-05-19 00:00:00",
+             "2021-05-25 00:00:00", "2021-07-05 00:00:00", "2021-05-20 00:00:00",
+             "2021-05-21 00:00:00", "2021-05-27 00:00:00", "2021-05-29 00:00:00")
+# 
+# end_lst <- c("2021-05-22 00:00:00", "2021-05-18 00:00:00", "2021-05-20 00:00:00")
+
+end_lst <- c("2021-05-22 00:00:00")
+end_lst <- c("2021-06-28 19:00:00")
+
+
+pi_lst <- list()
+
+for (i in seq(length(begin_lst))) {
+    # Extract refined PI data
+    begin <- begin_lst[i]
+    end <- end_lst[i]
+    # Get refined pi data
+    # FUNCTION
+    pi_hourly_dt <- get_pi_refined_dt2(pi_path, begin, end)
+    pi_hourly_dt$id <- seq_len(nrow(pi_hourly_dt))
+    pi_hourly_dt <- select(pi_hourly_dt, "id", "datetime", "date", "hour", everything())
+    pi_hourly_dt[, CHW_dT := SS2_RTD1_A-SS2_RTD1_B]
+    pi_hourly_dt[, measured_CHW_coolcapacity := SS2_AHU1_THERMALPOWER]
+    
+    pi_lst <- append(pi_lst, list(pi_hourly_dt))
+}
+
+pi_dt <- rbindlist(pi_lst, idcol="file")
+names(pi_dt)[which(names(pi_dt) == "file")] <- "index"
+
+# fwrite(pi_dt, file = here("data", "csv", "pi_dt.csv"))
+```
+
+Put the simulation and measured data together and find the time when ROOM3 zone mean air temperature reach setpoint
+
+```{r}
+n <- which(names(ep_dt3) == "datetime")
+ep_dt3_ <- ep_dt3[, -n]
+mea_sim_dt <- merge(ep_dt3_, pi_dt, by = c("index", "id"))
+# ------------------------------------------------------------------------------
+mea_sim_dt <- merge(ep_dt3_, pi_dt, by = c("id"), all = TRUE)
+# ------------------------------------------------------------------------------
+mea_sim_dt <- as.data.table(mea_sim_dt)
+names(mea_sim_dt)[which(names(mea_sim_dt) == "index.x")] <- "index"
+# ******************************************************************************
+# No need to run
+count <- length(path_idfs)
+pi_dt_ <- pi_dt[rep(seq_len(nrow(pi_dt)), each = count), ]
+# pi_dt_ <- pi_dt %>% slice(rep(1:n(), each = 3))
+pi_dt_$index <- rep(seq_len(count), times=nrow(pi_dt))
+mea_sim_dt <- merge(pi_dt_, ep_dt3_, by = c("index", "id"))
+# ******************************************************************************
+# mea_sim_dt <- fread(here("data", "csv", "mea_sim_dt2.csv"))
+
+# mea_sim_dt$SS4_FANDP1 <- pi_dt$SS4_FANDP1
+# mea_sim_dt$SS2_FLOW1 <- mea_sim_dt$SS2_FLOW1 / 60000
+
+# mea_sim_dt[, SS4_VAV3_IN := pi_dt[[grep("SS4_VAV3_IN", names(pi_dt))]]]
+
+# Code reference
+# cvrmse_dt2 <- separate(cvrmse_dt2, "idf_nm", into = c("set", "Tzone", "TSA", "date_number"), sep = "_")
+# cvrmse_dt2[, date_number:=NULL]
+# cvrmse_dt2[, Tzone := as.numeric(gsub("\\D*", "", cvrmse_dt2$Tzone))]
+
+# Tzone_lst <- separate(mea_sim_dt, "case", into = c("set", "Tzone", "TSA", "date_number", "script"), sep = "_")$Tzone
+# mea_sim_dt[, Tzone_setpoint := as.numeric(gsub("\\D*", "", Tzone_lst))]
+
+case_dt <- separate(mea_sim_dt[, "case"], "case", into = c("set", "Tzone", "TSA", "date_number"), sep = "_")
+# case_dt <- separate(mea_sim_dt[, "case"], "case", into = c("set", "script"), sep = "_")
+
+mea_sim_dt[, Tzone_setpoint := as.numeric(gsub("\\D*", "", case_dt$Tzone))]
+mea_sim_dt[, Tzone_setpoint := 24.0]
+
+mea_sim_dt[, model := gsub(".idf", "", case_dt$date_number)]
+mea_sim_dt[, model := "VAV"]
+
+
+# determine the supply air flow rate generated from the fan 
+mea_sim_dt$SS4_VAV3_IN_est <- mea_sim_dt$SS4_VAV3_IN
+mea_sim_dt[SS4_VAV3_IN > 100, "SS4_VAV3_IN_est"] <- 100.0
+mea_sim_dt[, Fan_Flow := SS4_SAFMS3_FLOW / (SS4_VAV3_IN_est/100)]
+
+x <- c(0L, 10L, 20L, 30L, 40L, 50L)
+
+closest <- function(n_lst) {
+  m_lst <- c()
+  for (n in n_lst) {
+    n <- x[which(abs(x-n)==min(abs(x-n)))[1]]
+    m_lst <- c(m_lst, n)
+  }
+  return(m_lst)
+}
+
+mea_sim_dt[, SS4_SFAN1_REF_est := closest(SS4_SFAN1_REF)]
+mea_sim_dt$SS4_SFAN1_REF_est <- as.numeric(mea_sim_dt$SS4_SFAN1_REF_est)
+mea_sim_dt[, Fan_Air_Volume_Flow_Rate := `FAN_AHU2:Fan Air Mass Flow Rate [kg/s](Hourly)` / 1.204]
+
+# Add air side zone cooling load
+# pi_air_side[, air_side_cooling_load_latent := 1.202 * 2454 * (pi_air_side[[2]] / 3600) *
+#               (pi_air_side$humidity_ratio_start - pi_air_side$humidity_ratio_end)]
+# 
+# pi_air_side[, air_side_cooling_load_sensible := (pi_air_side[[6]]- pi_air_side[[5]]) *
+#                    (pi_air_side_aggr[[2]] / 3600) * 1012 * 1.225]
+# 
+# pi_air_side[, air_side_cooling_load_total := air_side_cooling_load_latent + air_side_cooling_load_sensible]
+# mea_sim_dt$SS4_SP_AHU1 <- pi_dt$SS4_SP_AHU1
+# ------------------------------------------------------------------------------
+# NO NEED TO RUN
+mea_sim_dt[ , case := NULL]
+mea_sim_dt[ , model := NULL]
+
+non_numeric_cols <- names(mea_sim_dt %>% select_if(function(col) is.integer(col) | is.character(col)))
+cols <- c( "index", "id", "datetime", "date", "hour", "case", "model")
+to_numeric_cols <- setdiff(non_numeric_cols, cols)
+
+# mea_sim_int_dt <- mea_sim_dt %>% select_if(function(col) is.integer(col))
+# to_numeric_cols <- setdiff(names(mea_sim_int_dt), cols)
+
+other_cols <- setdiff(names(mea_sim_dt), to_numeric_cols)
+
+mea_sim_part_dt <- mea_sim_dt[, lapply(.SD, as.numeric), .SDcols = to_numeric_cols, ]
+mea_sim_dt <- cbind(mea_sim_dt[, c(other_cols), with=F], mea_sim_part_dt)
+# ------------------------------------------------------------------------------
+# Get matched long data table
+# HERE modify Function
+
+# Get melt data.table with Fan static pressure, fan power, and Fan flow estimated by the VAV damper position
+
+# matched_melt_dt <- get_matched_melt_dt(mea_sim_dt)
+# ------------------------------------------------------------------------------
+# Only for calibration levels prediction performance comparison
+# NO NEED TO RUN: This is for checking up for the item inconsistent with the names calling in the code
+param <- "NODEINLET_WATER_CLGCOIL_AHU2:System Node Temperature [C]"
+
+for (param in params) {
+  exist_no <- grep(param, names(mea_sim_dt))
+  if(length(exist_no) == 0){
+    print(param)
+  }else{
+    print(exist_no)
+  }
+}
+# ------------------------------------------------------------------------------
+# fwrite(mea_sim_dt, here("data", "idf", "calibration_levels", "mea_sim_dt.csv"))
+mea_sim_dt <- fread(here("data", "idf", "calibration_levels", "mea_sim_dt.csv"))
+
+non_numeric_cols <- names(mea_sim_dt %>% select_if(function(col) is.integer(col)))
+cols <- c("id", "index", "index.y", "date", "hour")
+to_numeric_cols <- setdiff(non_numeric_cols, cols)
+
+mea_sim_dt[, to_numeric_cols] <- mea_sim_dt[, lapply(.SD, as.numeric), .SDcols = to_numeric_cols]
+# ------------------------------------------------------------------------------
+matched_melt_dt <- get_melt_dt2(mea_sim_dt)
+# ------------------------------------------------------------------------------
+# HERE HERE
+# fwrite(matched_melt_dt, here("pic", "CAV_new_set", "matched_melt_dt_CAVNEWset.csv"))
+# fwrite(mea_sim_dt, here("pic", "CAV_new_set", "mea_sim_dt_CAVNEWset.csv"))
+# 
+# fwrite(matched_melt_dt, here("pic", "CAV", "matched_melt_dt_CAV3-2_base.csv"))
+# fwrite(mea_sim_dt, here("pic", "CAV", "mea_sim_dt_CAV3-2_base.csv"))
+# fwrite(air_side_dt, here("pic", "CAV", "air_side_dt_CAV3-2_base.csv"))
+# 
+# fwrite(matched_melt_dt2, here("pic", "CAV", "matched_melt_dt_CAV3-2_model1_S3.csv"))
+# fwrite(mea_sim_dt, here("pic", "CAV", "mea_sim_dt_CAV3-2_model1_S3.csv"))
+# fwrite(matched_wide_dt, here("pic", "CAV", "matched_wide_dt_CAV3-2_model1_S1.csv"))
+# 
+# fwrite(matched_melt_dt, here("pic", "CAV", "matched_melt_dt_CAV3-2_model1_check2_2.csv"))
+# fwrite(mea_sim_dt, here("pic", "CAV", "mea_sim_dt_CAV3-2_model1_check2_2.csv"))
+# 
+# matched_melt_dt <- fread(here("pic", "rewrite_CHW_Tin_EMSSA", "temp_matched_melt_dt.csv"))
+# 
+# matched_melt_dt <- fread(here("pic", "CAV", "matched_melt_dt_CAV3-2_base.csv"))
+# mea_sim_dt <- fread(here("pic", "CAV", "mea_sim_dt_CAV3-2_base.csv"))
+# 
+# matched_melt_dt <- fread(here("pic", "CAV", "matched_melt_dt_CAV3-7OA.csv"))
+# mea_sim_dt <- fread(here("pic", "CAV", "mea_sim_dt_CAV3-7OA.csv"))
+# 
+# matched_melt_dt <- fread(here("pic", "CAV", "matched_melt_dt_CAV3-4.csv"))
+# mea_sim_dt <- fread(here("pic", "CAV", "mea_sim_dt_CAV3-4.csv"))
+# 
+# matched_melt_dt <- fread(here("pic", "CAV", "matched_melt_dt_CAV3-3.csv"))
+# mea_sim_dt <- fread(here("pic", "CAV", "mea_sim_dt_CAV3-3.csv"))
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# fwrite(mea_sim_dt, file = here("data", "csv", "mea_sim_dt.csv"))
+# fwrite(matched_melt_dt, file = here("data", "csv", "matched_melt_dt.csv"))
+
+# matched_melt_dt <- fread(here("data", "csv", "matched_melt_dt.csv"))
+# matched_melt_dt <- fread(here("data", "csv", "temp_matched_melt_dt.csv"))
+# ------------------------------------------------------------------------------
+# Summarize the error for each parameter
+m <- which(names(matched_melt_dt) == "tag")
+# matched_melt_dt_ <- as.data.frame(matched_melt_dt)[, -m]
+matched_wide_dt <- dcast(as.data.table(as.data.frame(matched_melt_dt)[, -m]), id+datetime+date+hour+case~variable)
+# ------------------------------------------------------------------------------
+SetUnitSystem("SI")
+
+matched_wide_dt[, SA_HumidityRatio_mea := GetHumRatioFromRelHum(matched_wide_dt$`room_SA_T_mea`, matched_wide_dt$`room_SA_RH_mea` / 100, 95461.0)]
+matched_wide_dt[, RA_HumidityRatio_mea := GetHumRatioFromRelHum(matched_wide_dt$`room_RA_T_mea`, matched_wide_dt$`room_RA_RH_mea` / 100, 95461.0)]
+
+matched_wide_dt[, SA_HumidityRatio_sim := GetHumRatioFromRelHum(matched_wide_dt$`room_SA_T_sim`, matched_wide_dt$`room_SA_RH_sim` / 100, 95461.0)]
+matched_wide_dt[, RA_HumidityRatio_sim := GetHumRatioFromRelHum(matched_wide_dt$`room_RA_T_sim`, matched_wide_dt$`room_RA_RH_sim` / 100, 95461.0)]
+# ------------------------------------------------------------------------------
+# Calculate total cooling load of supply air to room (W)
+matched_wide_dt[, SA_clg_load_latent_mea := 1.202 * 2454 * matched_wide_dt$`room_RA_Volume_Flow_Rate_mea [m3/s]` *
+              (matched_wide_dt$RA_HumidityRatio_mea - matched_wide_dt$SA_HumidityRatio_mea) * 1000]
+
+matched_wide_dt[, SA_clg_load_sensible_mea := (matched_wide_dt$`room_RA_T_mea`- matched_wide_dt$`room_SA_T_mea`) *
+                   (matched_wide_dt$`room_RA_Volume_Flow_Rate_mea [m3/s]`) * 1006 * 1.202]
+
+matched_wide_dt[, SA_clg_load_total_mea := SA_clg_load_latent_mea + SA_clg_load_sensible_mea]
+# ------------------------------------------------------------------------------
+matched_wide_dt[, SA_clg_load_latent_sim := 1.202 * 2454 * matched_wide_dt$`room_RA_Volume_Flow_Rate_sim [m3/s]` *
+              (matched_wide_dt$RA_HumidityRatio_sim - matched_wide_dt$SA_HumidityRatio_sim) * 1000]
+
+matched_wide_dt[, SA_clg_load_sensible_sim := (matched_wide_dt$`room_RA_T_sim`- matched_wide_dt$`room_SA_T_sim`) *
+                   (matched_wide_dt$`room_RA_Volume_Flow_Rate_sim [m3/s]`) * 1006 * 1.202]
+
+matched_wide_dt[, SA_clg_load_total_sim := SA_clg_load_latent_sim + SA_clg_load_sensible_sim]
+# ------------------------------------------------------------------------------
+# Visualization Pre-processing
+# air_side_melt_dt <- melt(matched_wide_dt, id=c("datetime", "date", "hour", "error"))
+matched_melt_dt2 <- melt(matched_wide_dt[, -c("error")], id=c("id", "datetime", "date", "hour", "case"))
+matched_melt_dt2[grepl("mea", matched_melt_dt2$variable)==TRUE, tag:="measured"]
+matched_melt_dt2[grepl("sim", matched_melt_dt2$variable)==TRUE, tag:="simulated"]
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Visualization
+p_room_clgload2 <- ggplot2::ggplot(matched_melt_dt2[grepl("SA_clg_load_total", matched_melt_dt2$variable), ], aes(hour, value, color = variable)) +
+  geom_point(size=3, alpha=0.5) +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "Measured Zone Cooling Load (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/rewrite_CHW_Tin_EMSSA/ZoneLoad_VAV.jpg"),
+       plot = p_room_clgload2, dpi = 150, height = 6, width = 9)
+
+ggsave(filename = here::here("pic/CAV/ZoneLoad_CAV3-2_S3.jpg"),
+       plot = p_room_clgload2, dpi = 150, height = 6, width = 9)
+
+ggsave(filename = here::here("pic/CAV_new_set/ZoneLoad_1.jpg"),plot = p_room_clgload2, dpi = 150, height = 5, width = 10)
+```
+
+Get hourly discrepancy of each parameter
+
+```{r}
+param_lst <- c("SAT", "SARH", "SA_flow_rate",
+               "RAT_", "RARH", "RA_flow_rate",
+               "MAT", "MARH", "SS5_ROOM3_TEMP",
+               "SA_offcoil_temp", "SA_offcoil_RH", "Fan_Power",
+               "ClgCoil_Cooling_rate")
+
+# diff_dt <- data.table(date=as.Date(character()), datetime=POSIXct(), hour=integer(), diff=numeric(), tag=character())
+
+diff_dt <- read.csv(text = "date,datetime,hour,Tzone_setpoint,SAT_setpoint,Fan_Hz,diff,diff_ratio,tag", colClasses = c("Date", "POSIXct", "integer", "numeric", "numeric", "numeric", "numeric", "numeric", "character"))
+
+for (i in seq(length(param_lst))) {
+  param <- param_lst[i]
+  source_dt <- select(matched_wide_dt, "date", "datetime", "hour", "SS5_ROOM3_TEMP_Setpoint_sim [C]", "SA_offcoil_Tsetpoint_sim [C]", "Fan_frequency_mea [Hz]", contains(param))
+  names(source_dt)[which(names(source_dt) == "SS5_ROOM3_TEMP_Setpoint_sim [C]")] <- "Tzone_setpoint"
+  names(source_dt)[which(names(source_dt) == "SA_offcoil_Tsetpoint_sim [C]")] <- "TSA_setpoint"
+  names(source_dt)[which(names(source_dt) == "Fan_frequency_mea [Hz]")] <- "Fan_Hz"
+  
+  source_dt[, diff := source_dt[[grep("_sim", names(source_dt))]] - 
+              source_dt[[grep("_mea", names(source_dt))]]]
+  source_dt[, diff_ratio := source_dt[, "diff"] / source_dt[[grep("_mea", names(source_dt))]]]
+  source_dt[, tag := param]
+  
+  diff_one <- source_dt
+  diff_one[, c(grep(param, names(source_dt)))] <- list(NULL)
+  
+  diff_dt <- rbind(diff_dt, diff_one)
+  }
+
+diff_dt[, TSA_est_setpoint := round(TSA_setpoint, 0)]
+
+x <- c(10L, 20L, 30L, 40L, 50L)
+
+closest <- function(n_lst) {
+  m_lst <- c()
+  for (n in n_lst) {
+    n <- x[which(abs(x-n)==min(abs(x-n)))[1]]
+    m_lst <- c(m_lst, n)
+  }
+  return(m_lst)
+}
+
+diff_dt[, Fan_est_Hz := closest(Fan_Hz)]
+
+diff_dt <- select(diff_dt, "datetime", "date", "hour", "Tzone_setpoint", "TSA_est_setpoint","Fan_est_Hz", "diff", "diff_ratio", "tag", "TSA_setpoint", "Fan_Hz")
+
+fwrite(diff_dt, file = here("data", "csv", "diff_dt.csv"))
+```
+
+Check hourly error vary along with different zone temperature setpoint, SAT, and Fan speed
+
+```{r}
+# Visualization
+p_diff_ratio <- ggplot2::ggplot(diff_dt, aes(TSA_est_setpoint, diff_ratio, color = as.factor(Tzone_setpoint))) +
+  geom_point(size=3, alpha=0.5) +
+  # geom_line() +
+  # scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+  facet_grid(tag~as.factor(Fan_est_Hz), scales="free_y") +
+  labs(x = "SAT", y = "Difference ratio") +
+  # scale_color_gradientn(colours = terrain.colors(3)) +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/diff_ratio3.jpg"),
+       plot = p_diff_ratio, dpi = 150, height = 26, width = 10)
+```
+
+Get cvrmse for each parameter in the param_lst
+
+```{r}
+param_lst <- c("SAT", "SARH", "SA_flow_rate",
+               "RAT", "RARH", "RA_flow_rate",
+               "MAT", "MARH", "SS5_ROOM3_TEMP",
+               "SA_offcoil_temp", "SA_offcoil_RH", "Fan_Power",
+               "ClgCoil_Cooling_rate")
+
+cvrmse_dt <- data.table(param=character(), case=character(), cvrmse=numeric())
+
+# i in seq(length(locations2))
+for (i in seq(length(param_lst))) {
+  param <- param_lst[i]
+  source_dt <- select(matched_wide_dt, "date", "datetime", contains(param))
+  source_split_dt <- split(source_dt, by = c("date"))
+  
+  # cvrmse_lst <- lapply(source_split_dt, cvrmse_cal)
+  
+  cvrmse_lst <- sapply(source_split_dt, function(x) {
+    (mean((x[[4]]-x[[3]])^2)^0.5) / mean(x[[3]])
+  }
+    )
+  
+  # cvrmse_lst <- sapply(
+  #   source_split_dt, function(x) {
+  #     print(class(x))
+  #     m <- grep(".*mea\\s.*", names(x), value = FALSE)
+  #     p <- grep(".*sim\\s.*", names(x), value = FALSE)
+  #     measured <- x[[m]]
+  #     predicted <- x[[p]]
+  #     rmse = (mean((predicted - measured)^2))^0.5
+  #     cvrmse <- rmse/mean(measured)
+  #     return(cvrmse)}
+  #   )
+  
+  cvrmse_df <- as.data.frame(cvrmse_lst)
+  cvrmse_df$date <- row.names(cvrmse_df)
+  cvrmse_df_dt <- as.data.table(cvrmse_df)
+  names(cvrmse_df_dt)[which(names(cvrmse_df_dt) != "date")] <- "cvrmse"
+  cvrmse_one <- data.table(param=param, case=cvrmse_df_dt$date, cvrmse=cvrmse_df_dt$cvrmse)
+  cvrmse_dt <- rbind(cvrmse_dt, cvrmse_one)
+  }
+
+cvrmse_dt[, number := gsub("2021|-", "", cvrmse_dt$case)]
+
+# Add Tzone and SAT setpoint
+# get all file paths of weather files
+# Get a list of the idf name and simulation date for label each cases in data processing
+file_path <- fs::dir_ls(here("data", "idf"), recurse = TRUE, glob = "*.idf")
+case_lst <- gsub(".*\\/", "", file_path)
+case_lst <- gsub("\\.idf", "", case_lst)
+ac_case_lst <- case_lst[grep("set6", case_lst, value = FALSE)]
+ac_case_dt <- data.table(idf_nm = ac_case_lst, number = str_split_fixed(ac_case_lst, "_", 4)[ , 4])
+
+# CvRMSE data processing for visualization purpose
+cvrmse_dt2 <- merge(cvrmse_dt, ac_case_dt, by = c("number"))
+cvrmse_dt2[, case_name := cvrmse_dt2$idf_nm]
+cvrmse_dt2 <- separate(cvrmse_dt2, "idf_nm", into = c("set", "Tzone", "TSA", "date_number"), sep = "_")
+cvrmse_dt2[, date_number:=NULL]
+cvrmse_dt2[, Tzone := as.numeric(gsub("\\D*", "", cvrmse_dt2$Tzone))]
+cvrmse_dt2[, TSA := as.numeric(gsub("\\D*", "", cvrmse_dt2$TSA))]
+
+# target <- c("b", "c", "a", "d")
+# df[match(target, df$name),]
+
+# # Set the order of params according to vector with specific order (off-coil air --> SA --> return air --> mixed air --> Room Zone Mean air temperature --> )
+# target <- c("SA_offcoil_temp", "SA_offcoil_RH", "SAT", "SARH", "SA_flow_rate", "RAT", "RARH", "RA_flow_rate", "MAT", "MARH", "SS5_ROOM3_TEMP", "Fan_Power", "ClgCoil_Cooling_rate")
+# 
+# # Adjust the sequence of the parameter in each experiment case
+# split_cvrmse_dt2 <- split(cvrmse_dt2, by = c("case"))
+# split_cvrmse_dt3 <- lapply(split_cvrmse_dt2, function(x) {x <- x[match(target, x$param), ]})
+# cvrmse_dt3 <- rbindlist(split_cvrmse_dt3, use.names = TRUE, idcol = NULL)
+# cvrmse_dt3[, set := NULL]
+# cvrmse_dt3 <- select(cvrmse_dt3, "number", "case", "case_name", "param", "cvrmse", "Tzone", "TSA")
+
+# fwrite(cvrmse_dt3, file = here("data", "csv", "cvrmse_dt3.csv"))
+```
+
+Check cvrmse sequence and values under different combinations of set point temperatures and SATs
+
+```{r}
+# Reorder cvrmse_dt2 and Check the sequence
+split_cvrmse_dt3 <- split(cvrmse_dt2, by = c("case"))
+split_cvrmse_dt4 <- lapply(split_cvrmse_dt3, function(x) {setorder(x, cvrmse)})
+cvrmse_dt4 <- rbindlist(split_cvrmse_dt4, use.names = TRUE, idcol = NULL)
+
+# fwrite(cvrmse_dt4, file = here("data", "csv", "cvrmse_dt4.csv"))
+
+# Develop wide 
+wide_cvrmse_dt <- dcast(cvrmse_dt3, number+case+case_name+Tzone+TSA~param, value.var = "cvrmse")
+fwrite(wide_cvrmse_dt, file = here("data", "csv", "wide_cvrmse_dt.csv"))
+# ------------------------------------------------------------------------------
+# Visualize the CvRMSE
+p_cvrmse1 <- ggplot(cvrmse_dt2,
+                aes(param, cvrmse, fill=as.factor(TSA))) +
+    geom_col(position="dodge") +
+    theme(legend.position = "bottom") +
+    labs(x = "Parameters", y = "CvRMSE") +
+    facet_wrap(~Tzone, ncol = 1) +
+    scale_color_brewer(palette = "Set2")
+
+ggsave(filename = here("pic", "error_SAT_Tzone.jpg"), plot = p_cvrmse1, dpi = 150, height = 9, width = 12)
+# ------------------------------------------------------------------------------
+p_cvrmse2 <- ggplot(cvrmse_dt2,
+                aes(as.factor(TSA), cvrmse, fill=as.factor(Tzone))) +
+    geom_col(position="dodge") +
+    theme(legend.position = "bottom") +
+    labs(x = "Parameters", y = "CvRMSE") +
+    facet_wrap(~param, ncol = 1) +
+    scale_color_brewer(palette = "Set2")
+
+ggsave(filename = here("pic", "error_SAT_Tzone2.jpg"), plot = p_cvrmse2, dpi = 150, height = 21, width = 5)
+# ------------------------------------------------------------------------------
+p_cvrmse3 <- ggplot(cvrmse_dt2,
+                            aes(factor(param), cvrmse, fill = as.factor(Tzone))) +
+    geom_col(position="dodge") +
+    theme(legend.position = "bottom") +
+    labs(x = "Parameters", y = "CvRMSE") +
+    facet_wrap(~TSA, nrow = 4) +
+    scale_color_brewer(palette = "Set2")
+
+ggsave(filename = here::here("pic", "error_SAT_Tzone3b.jpg"),
+       plot = p_cvrmse3, dpi = 150, height = 5, width = 12)
+# ------------------------------------------------------------------------------
+# Plot without order
+p_cvrmse4 <- ggplot(cvrmse_dt4,
+                            aes(param, cvrmse, fill = as.factor(TSA))) +
+    geom_col(position="dodge") +
+    theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+    labs(x = "Parameters", y = "CvRMSE") +
+    facet_wrap(~case_name, nrow = 1) +
+    scale_color_brewer(palette = "Set2")
+
+# Plot with order
+p_cvrmse4 <- ggplot(cvrmse_dt4,
+                            aes(x=reorder(param, cvrmse), y=cvrmse, fill=as.factor(TSA))) +
+    geom_col(position="dodge") +
+    theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+    labs(x = "Parameters", y = "CvRMSE") +
+    facet_wrap(~case_name, nrow = 1) +
+    scale_color_brewer(palette = "Set2")
+
+ggsave(filename = here::here("pic", "error_SAT_Tzone4b.jpg"),
+       plot = p_cvrmse4, dpi = 150, height = 5, width = 12)
+# ------------------------------------------------------------------------------
+p_cvrmse5 <- ggplot(cvrmse_dt3,
+                            aes(case_name, cvrmse, fill = as.factor(TSA))) +
+  geom_col(position="dodge") +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+  labs(x = "Case name", y = "CvRMSE") +
+  facet_wrap(~as.factor(param), nrow = 5) +
+  scale_color_brewer(palette = "Set2")
+
+ggsave(filename = here::here("pic", "error_SAT_Tzone5c.jpg"),
+       plot = p_cvrmse5, dpi = 150, height = 9, width = 6)
+
+p_cvrmse6 <- ggplot(cvrmse_dt3,
+                            aes(case_name, cvrmse, fill = as.factor(TSA))) +
+  geom_col(position="dodge") +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+  labs(x = "Case name", y = "CvRMSE") +
+  facet_wrap(~as.factor(param), nrow = 5, scales="free_y") +
+  scale_color_brewer(palette = "Set2")
+```
+
+View the discrepancy of the nine observation parameters between simulation and measured results 
+
+```{r}
+matched_melt_dt2 <- matched_melt_dt
+matched_melt_dt2[, number := gsub("2021|-", "", matched_melt_dt2$date)]
+matched_melt_dt2 <- merge(matched_melt_dt2, ac_case_dt, by = c("number"), all.x = TRUE, all.y = FALSE)
+
+# ******************************************************************************
+# Visualize the discrepancy for each parameter
+# ******************************************************************************
+
+# Part 2
+# ------------------------------------------------------------------------------
+# Check fan power
+# 12
+p_fanREF <- ggplot2::ggplot(matched_melt_dt2[grepl("Fan_frequency", matched_melt_dt2$variable), ],
+                              aes(datetime, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+  facet_wrap(~idf_nm, nrow = 2, scales = "free_x") +
+  labs(x = "Datetime", y = "Fan frequency (Hz)", title = "Measured Fan Frequenyc") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/params/room3_12FanRef_sets6.jpg"),
+       plot = p_fanREF, dpi = 150, height = 6, width = 12)
+
+# 13
+p_fanPower <- ggplot2::ggplot(matched_melt_dt2[grepl("Fan_Power", matched_melt_dt2$variable), ],
+                               aes(datetime, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 4)) +
+  facet_wrap(~idf_nm, nrow = 2, scales = "free_x") +
+  labs(x = "Datetime", y = "Fan power (W)", title = "Measured and Simulated Fan Power Rate") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/params/room3_13fan_power_sets6.jpg"),
+       plot = p_fanPower2, dpi = 150, height = 6, width = 12)
+# ------------------------------------------------------------------------------
+# Check CHW cooling rate
+# 14
+p_ClgCoil_Clg_rate <- ggplot2::ggplot(matched_melt_dt2[grepl("ClgCoil_Cooling_rate", matched_melt_dt2$variable), ],
+                                      aes(datetime, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+  facet_wrap(~idf_nm, nrow = 2, scales = "free_x") +
+  labs(x = "Datetime", y = "ClgCoil_Cooling_rate_mea (W)", title = "Measured and Simulated ClgCoil Cooling Rate") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/params/room3_14ClgCoil_Clg_rate_sets6.jpg"),
+       plot = p_ClgCoil_Clg_rate, dpi = 150, height = 6, width = 12)
+# ******************************************************************************
+# Check CHW (cooling coil) side
+# ******************************************************************************
+# Part 3
+# The following codes use a new plot size for print
+# Note: facet is set by "date" or "case
+p_CHW_Clg_rate <- ggplot2::ggplot(matched_melt_dt[grepl("CHW_cooling_rate", matched_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point(size=4.5, alpha=0.5) +
+  geom_line() +
+  facet_wrap(~case) +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "CHW Cooling Rate (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/CHW_clg_rate_CAV3-2_model1_S4.jpg"),plot = p_CHW_Clg_rate, dpi = 150, height = 6, width = 9)
+ggsave(filename = here::here("pic/CAV_new_set/CHW_clg_rate_1.jpg"),plot = p_CHW_Clg_rate, dpi = 150, height = 5, width = 10)
+
+ggsave(filename = here::here("pic/rewrite_CHW_Tin_EMSSA/check_CHW_clg_rate_withEMSSA.jpg"), plot = p_CHW_Clg_rate, dpi = 150, height = 6, width = 9)
+
+# ******************************************************************************
+# No need to run if you don't need check the data
+CHW_Clg_rate_dt <- matched_melt_dt[grepl("CHW_cooling_rate|Fan_frequency", matched_melt_dt$variable), ]
+CHW_Clg_rate_wide_dt <- dcast(CHW_Clg_rate_dt[, -c("tag")], id+datetime+date+hour+model~variable, value.var = "value")
+fwrite(CHW_Clg_rate_wide_dt, here("pic", "CAV", "check_CHW_Clg_rate_dt.csv"))
+# ******************************************************************************
+# Check chilled water return temperature
+p_CHW_Tout <- ggplot2::ggplot(matched_melt_dt[grepl("CHW_outlet_node_Temperature", matched_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point(size=3) +
+  geom_line() +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  facet_wrap(~as.factor(case), scales = "free_x") +
+  labs(x = "Datetime", y = "CHW outlet temperature (C)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/CHW_Tout_CAV3-2_model1_S2_check2_2.jpg"),
+       plot = p_CHW_Tout, dpi = 150, height = 6, width = 9)
+
+ggsave(filename = here::here("pic/calibration_levels/CHW_Tout1.jpg"),
+       plot = p_CHW_Tout, dpi = 150, height = 6, width = 9)
+
+# Check chilled water supply and return temperature
+p_CHW_Tin <- ggplot2::ggplot(matched_melt_dt[grepl("CHW_intlet_node_Temperature", matched_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point(size=3) +
+  geom_line() +
+  facet_wrap(~case, scales = "free_x") +
+  labs(x = "Datetime", y = "CHW inlet temperature (C)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/CHW_Tin_CAV3-2_model1_S2_check2_2.jpg"),plot = p_CHW_Tin, dpi = 150, height = 6, width = 9)
+
+ggsave(filename = here::here("pic/calibration_levels/CHW_Tin1.jpg"),
+       plot = p_CHW_Tin, dpi = 150, height = 6, width = 9)
+
+# Check CHW_dT
+p_CHW_Tdiff <- ggplot2::ggplot(matched_melt_dt[grepl("CHW_dT", matched_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point(size=3) +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "CHW T_difference (C)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/CHW_Tdif_CAV3-2_model1_S2_check2_2.jpg"),
+       plot = p_CHW_Tdiff, dpi = 150, height = 6, width = 9)
+
+# Check CHW volume flow rate (current density)
+p_CHW_volume_flow_rate <- ggplot2::ggplot(matched_melt_dt[grepl("CHW_Volume_flow_rate", matched_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point(size=3) +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "CHW volume flow rate (m3/s)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/CHW_VolFlowRate_CAV3-2_model1_S2_check2_2.jpg"), plot = p_CHW_volume_flow_rate, dpi = 150, height = 6, width = 9)
+
+# Check the coil inlet and outlet node enthalpy
+enthalpy_dt <- matched_melt_dt[grepl("Fan_Air_Mass_Flow_Rate|Fan_Air_Volume_Flow_Rate|offcoil_SA_Standard_Density_Volume_Flow_Rate|room_SA_Volume_Flow_Rate|room_RA_Volume_Flow_Rate|Fan_frequency|coil_inlet_MA_Enthalpy|coil_outlet_Enthalpy|coil_inlet_MA_Mass_Flow_Rate|CHW_intlet_node_Temperature|CHW_outlet_node_Temperature|CHW_inlet_node_Mass_Flow_Rate|CHW_Volume_flow_rate|coil_inlet_MA_T|coil_inlet_MA_RH|coil_outlet_air_Temperature_sim|coil_outlet_air_RH_sim|CHW_cooling_rate", matched_melt_dt$variable), ]
+enthalpy_wide_dt <- dcast(enthalpy_dt[, -c("tag")], id+datetime+date+hour+model~variable, value.var = "value")
+
+fwrite(enthalpy_wide_dt, here("pic", "CAV", "enthalpy_wide_dt_CAV_3_1_8L.csv"))
+# ******************************************************************************
+# Check air side: Part 1
+# ******************************************************************************
+# Check Supply Air
+# 1
+p_SAT <- ggplot2::ggplot(matched_melt_dt[grepl("room_SA_T", matched_melt_dt$variable), ],
+                             aes(hour, value, color = tag)) +
+  geom_point(size=3, alpha=0.5) +
+  geom_line() +
+  # scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+  facet_wrap(~model) +
+  # labs(x = "Hour", y = "SAT (C)", title = "Measured and Simulated Supply Air Temperature") +
+  labs(x = "Hour", y = "SAT (C)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV_new_set/SA_T_1.jpg"),plot = p_SAT, dpi = 150, height = 5, width = 10)
+
+ggsave(filename = here::here("pic/CAV/SAT_CAV3-2_model1_S2_check2_2.jpg"),
+       plot = p_SAT, dpi = 150, height = 6, width = 9)
+
+# ggplotly(p_SAT)
+
+# 2
+p_SARH <- ggplot2::ggplot(matched_melt_dt[grepl("room_SA_RH", matched_melt_dt$variable), ],
+                         aes(hour, value, color = tag)) +
+    geom_point(size=3, alpha=0.5) +
+    geom_line() +
+    # scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+    facet_wrap(~model) +
+    labs(x = "Hour", y = "RH (%)", title = "Measured and Simulated Supply Air RH (%)") +
+    theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV_new_set/SA_RH_1.jpg"),plot = p_SARH, dpi = 150, height = 5, width = 10)
+
+ggsave(filename = here::here("pic/CAV/SARH_CAV3-2_model1_S2_check2_2.jpg"),
+       plot = p_SARH, dpi = 150, height = 6, width = 12)
+
+# 3
+p_SA_VFR <- ggplot2::ggplot(matched_melt_dt[grepl("room_SA_Volume_Flow_Rate", matched_melt_dt$variable), ],
+                         aes(hour, value, color = tag)) +
+    geom_point(size=3, alpha=0.5) +
+    geom_line() +
+    # scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+    facet_wrap(~model) +
+    labs(x = "Hour", y = "Supply Air Volume Flow Rate (m3/s)") +
+    theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV_new_set/SA_VFR_1.jpg"),plot = p_SA_VFR, dpi = 150, height = 5, width = 10)
+
+ggsave(filename = here::here("pic/CAV/SA_VFR_CAV3-2_model1_S2_check2_2.jpg"),
+       plot = p_SA_VFR, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+# Check return air
+# 4
+p_RAT <- ggplot2::ggplot(matched_melt_dt[grepl("room_RA_T", matched_melt_dt$variable), ],
+                         aes(hour, value, color = tag)) +
+  geom_point(size=3) +
+  geom_line() +
+  # scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+  facet_wrap(~model) +
+  labs(x = "Hour", y = "RAT (C)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/RAT_CAV3-2_model1_S2_check2_2.jpg"),
+       plot = p_RAT, dpi = 150, height = 6, width = 9)
+
+# 5
+p_RARH <- ggplot2::ggplot(matched_melt_dt[grepl("room_RA_RH", matched_melt_dt$variable), ],
+                          aes(hour, value, color = tag)) +
+    geom_point(size=3) +
+    geom_line() +
+    # scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+  facet_wrap(~model) +
+    labs(x = "Hour", y = "Return Air RH (%)") +
+    theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/RA_RH_CAV3-2_model1_S2_check2_2.jpg"),
+       plot = p_RARH, dpi = 150, height = 6, width = 9)
+
+# 6
+p_RA_VFR <- ggplot2::ggplot(matched_melt_dt[grepl("room_RA_Volume_Flow_Rate", matched_melt_dt$variable), ],
+                            aes(hour, value, color = tag)) +
+    geom_point(size=3, alpha=0.5) +
+    geom_line() +
+    # scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+  facet_wrap(~model) +
+    labs(x = "Hour", y = "Return Air Volume Flow Rate (m3/s)") +
+    theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV_new_set/RA_VFR_1.jpg"),plot = p_RA_VFR, dpi = 150, height = 5, width = 10)
+
+ggsave(filename = here::here("pic/CAV/RA_VFR_CAV3-2_model1_S2_check2_2.jpg"),
+       plot = p_RA_VFR, dpi = 150, height = 6, width = 9)
+
+# ******************************************************************************
+# Further check the SA and RA volume flow rate
+p_SA_RA_VFR <- ggplot2::ggplot(matched_melt_dt[grepl("room_SA_Volume_Flow_Rate|room_RA_Volume_Flow_Rate", matched_melt_dt$variable), ], aes(hour, value, color = variable)) +
+    geom_point(size=6) +
+    geom_line() +
+    # scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+  facet_wrap(~tag) +
+  labs(x = "Hour", y = "SA/RA Volume Flow Rate (m3/s)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/CAV_SA_RA_VFR_3-2_model1_S1.jpg"),
+       plot = p_SA_RA_VFR, dpi = 150, height = 6, width = 9)
+
+p_SA_RA_T <- ggplot2::ggplot(matched_melt_dt[grepl("room_SA_T|room_RA_T", matched_melt_dt$variable), ], 
+                             aes(hour, value, color = variable)) +
+    geom_point(size=6) +
+    geom_line() +
+    # scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+  facet_wrap(~tag) +
+  labs(x = "Hour", y = "SAT / RAT (C)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/CAV_SA_RAT_3-2_model1_S1.jpg"),
+       plot = p_SA_RA_T, dpi = 150, height = 6, width = 9)
+# ******************************************************************************
+SA_RA_dt <- matched_melt_dt[grepl("room_SA_Volume_Flow_Rate|room_RA_Volume_Flow_Rate|Fan_frequency", matched_melt_dt$variable), ]
+
+# CHW_Clg_rate_dt <- matched_melt_dt[grepl("CHW_cooling_rate|Fan_frequency", matched_melt_dt$variable), ]
+SA_RA_wide_dt <- dcast(SA_RA_dt[, -c("tag")], id+datetime+date+hour+model~variable, value.var = "value")
+fwrite(SA_RA_wide_dt, here("pic", "CAV", "check_SA_RA_dt.csv"))
+
+fanHz_dt <- melt(SA_RA_wide_dt, id=c("id", "datetime", "date", "hour", "model", "Fan_frequency_est_mea [Hz]", "Fan_frequency_mea [Hz]"))
+
+p_fanHz_SARAsim <- ggplot2::ggplot(fanHz_dt[grepl("room_SA_Volume_Flow_Rate_sim|room_RA_Volume_Flow_Rate_sim", fanHz_dt$variable), ], aes(`Fan_frequency_mea [Hz]`, value, color = variable)) +
+  geom_point(size=6) +
+  # geom_line() +
+  # scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+  # facet_wrap(~tag) +
+  labs(x = "Fan speed (Hz)", y = "Simulated SA/RA Volume Flow Rate (m3/s)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/CAV_fanHz_SARA_3-1-4_sim.jpg"),
+       plot = p_fanHz_SARAsim, dpi = 150, height = 6, width = 9)
+
+m <- lm(`room_RA_Volume_Flow_Rate_mea [m3/s]` ~ `Fan_frequency_mea [Hz]`, SA_RA_wide_dt)
+broom::tidy(m)
+# ------------------------------------------------------------------------------
+# Check Room States
+# 9
+p_RoomT <- ggplot2::ggplot(matched_melt_dt[grepl("ROOM3_ZoneMeanAir_TEMP", matched_melt_dt$variable), ],
+                         aes(hour, value, color = tag)) +
+    geom_point(size=3, alpha = 0.5) +
+    geom_line() +
+    # scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+  facet_wrap(~model, nrow = 3, scales = "free_x") +
+    labs(x = "Hour", y = "Room3 Zone Mean Air Temperature (C)") +
+    theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV_new_set/Room_T_1.jpg"),plot = p_RoomT, dpi = 150, height = 5, width = 10)
+
+ggsave(filename = here::here("pic/CAV/CAV_check_Troom_3-2_model1.jpg"),
+       plot = p_RoomT, dpi = 150, height = 6, width = 9)
+
+ggsave(filename = here::here("pic/rewrite_CHW_Tin_EMSSA/check_Troom.jpg"),
+       plot = p_RoomT, dpi = 150, height = 6, width = 9)
+
+ggplotly(p_RoomT)
+# ------------------------------------------------------------------------------
+p_RoomT2 <- ggplot2::ggplot(matched_melt_dt[grepl("ROOM3_ZoneMeanAir_TEMP|ROOM3_clg_setpoint_sim", matched_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point(size=6, alpha=0.5) +
+  geom_line() +
+  facet_wrap(~model) +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "Room3 zone air temperature [C]") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/CAV_check_room3_T_3_1_8L.jpg"),plot = p_Troom3, dpi = 150, height = 6, width = 9)
+ggsave(filename = here::here("pic/CAV/CAV_check_Troom3-7_withOA.jpg"),plot = p_Troom3, dpi = 150, height = 6, width = 9)
+ggsave(filename = here::here("pic/CAV/CAV_SA_RAT_3-2_model1_S1.jpg"),plot = p_RoomT, dpi = 150, height = 6, width = 9)
+ggsave(filename = here::here("pic/CAV/SA_RAT_CAV3-2_model1_S3.jpg"),plot = p_RoomT2, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+# Room3 simulated RH
+p_RoomRH <- ggplot2::ggplot(matched_melt_dt[grepl("ROOM3_ZoneAir_RH", matched_melt_dt$variable), ],
+                         aes(hour, value, color = tag)) +
+    geom_point(size=6) +
+    geom_line() +
+    # scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+  facet_wrap(~model) +
+    labs(x = "Hour", y = "Room3 Zone Air RH (%)") +
+    theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/CAV_check_RH_CAV3-1-7withOA.jpg"),
+       plot = p_RoomRH, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Check VAV damper position
+p_VAVdamper <- ggplot2::ggplot(matched_melt_dt[grepl("SS4_VAV3_IN_damper_position", matched_melt_dt$variable), ],
+                         aes(hour, value, color = variable)) +
+  geom_point(size=3) +
+  geom_line() +
+  facet_wrap(~model, nrow = 2, scales = "free_x") +
+  labs(x = "Hour", y = "Room3 VAV Terminal damper position (%)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/VAVdamper_CAV3-4.jpg"),
+       plot = p_VAVdamper, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+# Chech the outdoor temperature
+p_Tout <- ggplot2::ggplot(matched_melt_dt[grepl("Site_Outdoor_Air_Temperature_sim", matched_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point(size=5) +
+  geom_line() +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "Outdoor air temperature (C)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/check_model1_outdoorT.jpg"),
+       plot = p_Tout, dpi = 150, height = 6, width = 9)
+
+p_RHout <- ggplot2::ggplot(matched_melt_dt[grepl("Site_Outdoor_Air_Relative_Humidity_sim", matched_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point(size=5) +
+  geom_line() +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "Outdoor air RH (%)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/check_model1_outdoorRH.jpg"),
+       plot = p_RHout, dpi = 150, height = 6, width = 9)
+
+p_Tin <- ggplot2::ggplot(matched_melt_dt[grepl("ROOM3_ZoneMeanAir_TEMP", matched_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point(size=5) +
+  geom_line() +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "Zone Mean air temperature (C)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/check_zoneT.jpg"),
+       plot = p_Tin, dpi = 150, height = 6, width = 9)
+
+p_RHin <- ggplot2::ggplot(matched_melt_dt[grepl("ROOM3_ZoneAir_RH", matched_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point(size=5) +
+  geom_line() +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "Zone air RH (%)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/check_zoneRH.jpg"),
+       plot = p_RHin, dpi = 150, height = 6, width = 9)
+# ******************************************************************************
+# Check off-coil temperature
+# ******************************************************************************
+
+# 10
+p_offcoilT <- ggplot2::ggplot(matched_melt_dt[grepl("offcoil_SA_temp", matched_melt_dt$variable), ],
+                           aes(hour, value, color = variable)) +
+    geom_point(size=6, alpha=0.5) +
+    geom_line() +
+    # scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+  facet_wrap(~model) +
+    labs(x = "Hour", y = "Off-coil SA Temp (C)") +
+    theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/coil_outlet_Tair_CAV3-3.jpg"),
+       plot = p_offcoilT, dpi = 150, height = 6, width = 9)
+
+# 11
+p_offcoilRH <- ggplot2::ggplot(matched_melt_dt[grepl("offcoil_SA_RH", matched_melt_dt$variable), ],
+                              aes(hour, value, color = tag)) +
+    geom_point(size=6) +
+    geom_line() +
+    # scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+  facet_wrap(~model) +
+    labs(x = "Hour", y = "Off-coil SA RH (%)") +
+    theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/room3_11offcoilRH_sets6.jpg"),
+       plot = p_offcoilRH, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+# Check mixed air
+# 7
+p_MAT <- ggplot2::ggplot(matched_melt_dt[grepl("coil_inlet_MA_T", matched_melt_dt$variable), ],
+                         aes(hour, value, color = tag)) +
+    geom_point(size=6) +
+    geom_line() +
+    # scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+  facet_wrap(~model) +
+    labs(x = "Hour", y = "MAT (C)") +
+    theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/coil_inlet_Tair_CAV3-3.jpg"),
+       plot = p_MAT, dpi = 150, height = 6, width = 9)
+
+# 8
+p_MARH <- ggplot2::ggplot(matched_melt_dt[grepl("coil_inlet_MA_RH", matched_melt_dt$variable), ],
+                          aes(hour, value, color = tag)) +
+    geom_point(size=6) +
+    geom_line() +
+    # scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+  facet_wrap(~model) +
+    labs(x = "Hour", y = "Mixed Air RH (%)") +
+    theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/room3_8MARH_sets6.jpg"),
+       plot = p_MARH, dpi = 150, height = 6, width = 9)
+
+
+
+# ------------------------------------------------------------------------------
+# Off-coil SA temperature measured, simulated, and setpoint
+p_OffCoilSAT <- ggplot2::ggplot(matched_melt_dt[grepl("offcoil_SA_temp", matched_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point(size=3, alpha=0.5) +
+  geom_line() +
+  facet_wrap(~model) +
+  labs(x = "Hour", y = "Offcoil SAT (C)") +
+  theme(legend.position = "top")
+
+ggplotly(p_OffCoilSAT)
+
+ggsave(filename = here::here("pic/CAV/CAV_offcoilSAT_3-2_model1_S2_check2_1.jpg"), plot = p_OffCoilSAT, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+p_fan_and_offcoilSA_VFlow <- ggplot2::ggplot(matched_melt_dt[grepl("Fan_Air_Volume_Flow_Rate|offcoil_SA_Standard_Density_Volume_Flow_Rate", matched_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point(size=3, alpha=0.5) +
+  geom_line() +
+  facet_wrap(~model) +
+  labs(x = "Hour", y = "Fan/off-coil Volume Flow Rate (m3/s") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/CAV_Fan_VFlow_rate2.jpg"),plot = p_fan_and_offcoilSA_VFlow, dpi = 150, height = 3, width = 5)
+
+p_fan_offcoilSA_SA_RA_VFlow <- ggplot2::ggplot(matched_melt_dt[grepl("Fan_Air_Volume_Flow_Rate|offcoil_SA_Standard_Density_Volume_Flow_Rate|room_SA_Volume_Flow_Rate|room_RA_Volume_Flow_Rate", matched_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point(size=3, alpha=0.5) +
+  geom_line() +
+  facet_wrap(~model) +
+  labs(x = "Hour", y = "Fan/off-coil Volume Flow Rate (m3/s") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/CAV_all_VFlow_rate_3-3.jpg"),plot = p_fan_offcoilSA_SA_RA_VFlow, dpi = 150, height = 6, width = 9)
+
+# Further check the coil inlet node air volume flow rate
+
+select_vFlow_dt <- matched_melt_dt[grepl("coil_outlet_Standard_Density_Volume_Flow_Rate_sim|coil_inlet_MA_Standard_Density_Volume_Flow_Rate|Fan_Air_Volume_Flow_Rate|offcoil_SA_Standard_Density_Volume_Flow_Rate|room_SA_Volume_Flow_Rate|room_RA_Volume_Flow_Rate", matched_melt_dt$variable), ]
+select_vFlow_dt$variable <- str_replace_all(select_vFlow_dt$variable, "_", " ")
+
+p_coil_inlet_VFlow <- ggplot2::ggplot(select_vFlow_dt, aes(hour, value, color = variable)) +
+  geom_point(size=3, alpha=0.5) +
+  geom_line() +
+  facet_wrap(~variable, labeller = labeller(variable = label_wrap_gen(15)), nrow = 1) +
+  labs(x = "Hour", y = "Fan/Coil Volume Flow Rate (m3/s") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/CAV_all_VFlow_rate_3-2_model1_S2_check2_3.jpg"),plot = p_coil_inlet_VFlow, dpi = 150, height = 6, width = 12)
+
+check_dt <- matched_melt_dt[grepl("coil_outlet_Standard_Density_Volume_Flow_Rate_sim|coil_inlet_MA_Standard_Density_Volume_Flow_Rate|Fan_Air_Volume_Flow_Rate|offcoil_SA_Standard_Density_Volume_Flow_Rate|room_SA_Volume_Flow_Rate|room_RA_Volume_Flow_Rate", matched_melt_dt$variable), ]
+
+check_dt2 <- dcast(check_dt[, -c("tag")], id+datetime+date+hour+model~variable, value.var = "value")
+
+fwrite(check_dt2, here("pic", "CAV", "check_dt_CAV3-4.csv"))
+
+
+# ------------------------------------------------------------------------------
+# Check Outdoor Air amount
+
+p_OA <- ggplot2::ggplot(matched_melt_dt[grepl("OA_inlet_Standard_Density_Volume_Flow_Rate", matched_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point(size=3, alpha=0.5) +
+  geom_line() +
+  facet_wrap(~model) +
+  labs(x = "Hour", y = "simulated OA standard density VFR (m3/s)") +
+  theme(legend.position = "top")
+
+# ------------------------------------------------------------------------------
+p_coil_air_T <- ggplot2::ggplot(matched_melt_dt[grepl("offcoil_SA_temp|offcoil_SA_temp_Setpoint_sim|room_SA_T|room_RA_T|coil_inlet_MA_T|coil_outlet_air_Temperature_sim", matched_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point(size=6, alpha=0.5) +
+  geom_line() +
+  facet_wrap(~model) +
+  labs(x = "Hour", y = "Air temperature (C)") +
+  theme(legend.position = "top")
+
+
+select_dt <- matched_melt_dt[grepl("offcoil_SA_temp|offcoil_SA_temp_Setpoint_sim|room_SA_T|room_RA_T|coil_inlet_MA_T|coil_outlet_air_Temperature_sim|ROOM3_ZoneMeanAir_TEMP", matched_melt_dt$variable), ]
+
+select_dt$variable <- str_replace_all(select_dt$variable, "_", " ")
+# select_dt2 <- mutate(select_dt, short_variable = str_wrap(variable, width = 8))
+
+p_all_air_T2 <- ggplot2::ggplot(select_dt, aes(hour, value, color = variable)) +
+  geom_point(size=5, alpha=0.5) +
+  geom_line() +
+  # facet_wrap(~model) +
+  labs(x = "Hour", y = "Air temperature (C)") +
+  facet_wrap(~variable, labeller = labeller(variable = label_wrap_gen(15)), nrow = 1) +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/CAV_all_SAT_3-2_model1_S2_check2_3.jpg"),plot = p_all_air_T2, dpi = 150, height = 6, width = 12)
+
+# ******************************************************************************
+# Check fan power
+# ******************************************************************************
+
+# Check fan power with 1) overwrite the CHW inlet temp; 2) Turn off the outdoor air; 3) the ineffective EMS to overwrite the off-coil SA Mass Flow Rate
+p_fan_power <- ggplot2::ggplot(matched_melt_dt[grepl("Fan_Power", matched_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point(size=6) +
+  geom_line() +
+  facet_wrap(~model) +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "Fan power (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/rewrite_CHW_Tin_EMSSA/check_FanPower_3-1-7_withOA.jpg"), plot = p_fan_power, dpi = 150, height = 6, width = 9)
+
+p_fan_Hz <- ggplot2::ggplot(matched_melt_dt[grepl("Fan_frequency_mea|Fan_frequency_est_mea", matched_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point(size=3, alpha=0.5) +
+  geom_line() +
+  facet_wrap(~model) +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "Fan power (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/CAV_FanHz.jpg"),plot = p_fan_Hz, dpi = 150, height = 3, width = 5)
+
+# ------------------------------------------------------------------------------
+# Further check the fan power against the fan speed
+CHW_fan_dt <- matched_melt_dt[grepl("Fan_Power|Fan_frequency|CHW_cooling_rate", matched_melt_dt$variable), ]
+m <- which(names(CHW_fan_dt) == "tag")
+CHW_fan_dt <- as.data.frame(CHW_fan_dt)[, -m]
+CHW_fan_wide_dt <- dcast(as.data.table(CHW_fan_dt), id+datetime+date+hour+model~variable)
+
+p_fan_FanPower_mea <- ggplot2::ggplot(CHW_fan_wide_dt, aes(`Fan_frequency_mea [Hz]`, `Fan_Power_mea [W]`, color = as.factor(date))) +
+  geom_point() +
+  geom_line() +
+  # facet_wrap(~model) +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Fan speed (Hz)", y = "Measured fan power (W)") +
+  theme(legend.position = "top")
+
+p_fan_CHW_mea <- ggplot2::ggplot(CHW_fan_wide_dt, aes(`Fan_frequency_mea [Hz]`, `CHW_cooling_rate_mea [W]`, color = as.factor(date))) +
+  geom_point(size=3) +
+  # geom_line() +
+  # facet_wrap(~model) +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Fan speed (Hz)", y = "Measured CHW cooling rate (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/rewrite_CHW_Tin_EMSSA/check_CHW_fan_CHW_mea_withEMSSA.jpg"), plot = p_fan_CHW_mea, dpi = 150, height = 3, width = 5)
+
+p_fan_CHW_sim <- ggplot2::ggplot(CHW_fan_wide_dt, aes(`Fan_frequency_mea [Hz]`, `CHW_cooling_rate_sim [W]`, color = as.factor(date))) +
+  geom_point(size=3) +
+  # geom_line() +
+  # facet_wrap(~model) +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Fan speed (Hz)", y = "Simulated CHW cooling rate (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/rewrite_CHW_Tin_EMSSA/check_CHW_fan_CHW_sim_withEMSSA.jpg"), plot = p_fan_CHW_sim, dpi = 150, height = 3, width = 5)
+
+fwrite(CHW_fan_wide_dt, file = here("pic", "rewrite_CHW_Tin_EMSSA", "CHW_fan.csv"))
+
+# Check the fan speed and save the plot in small size 
+p_fan_Hz <- ggplot2::ggplot(matched_melt_dt[grepl("Fan_frequency", matched_melt_dt$variable), ], aes(hour, value, color = as.factor(date))) +
+  geom_point(size=3) +
+  # geom_line() +
+  # facet_wrap(~model) +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "Fan speed (Hz)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/rewrite_CHW_Tin_EMSSA/FanHz_0521.jpg"), plot = p_fan_Hz, dpi = 150, height = 3, width = 5)
+
+p_FAN_SPEED_SCHE <- ggplot2::ggplot(matched_melt_dt[grepl("FAN_SPEED_SCHE_sim", matched_melt_dt$variable), ], aes(hour, value, color = as.factor(date))) +
+  geom_point(size=3) +
+  # geom_line() +
+  # facet_wrap(~model) +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "Fan speed schedule value (Hz)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/CAV_fan_speed_sche.jpg"),plot = p_FAN_SPEED_SCHE, dpi = 150, height = 3, width = 5)
+# ------------------------------------------------------------------------------
+# Check ROOM3_ZoneMeanAir_TEMP
+# ------------------------------------------------------------------------------
+fwrite(mea_sim_dt, file = here("pic", "rewrite_CHW_Tin_EMSSA", "temp_mea_sim_dt.csv"))
+fwrite(matched_melt_dt, file = here("pic", "rewrite_CHW_Tin_EMSSA", "temp_matched_melt_dt.csv"))
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Create the new schedule file with penalty on the off-coil SAT based on the fan speed
+# NO NEED TO RUN
+schefile_path <- here("data", "idf", "run", "new_sche_file4.csv")
+schefile_dt <- fread(schefile_path)
+
+schefile_dt[SS4_SFAN1_REF_est == 10, CL_AHU1_TEMPLOOP_SETPOINT_PEN := CL_AHU1_TEMPLOOP_SETPOINT + 6.0]
+schefile_dt[SS4_SFAN1_REF_est == 15, CL_AHU1_TEMPLOOP_SETPOINT_PEN := CL_AHU1_TEMPLOOP_SETPOINT + 4.5]
+schefile_dt[SS4_SFAN1_REF_est == 20, CL_AHU1_TEMPLOOP_SETPOINT_PEN := CL_AHU1_TEMPLOOP_SETPOINT + 3.0]
+schefile_dt[SS4_SFAN1_REF_est == 25, CL_AHU1_TEMPLOOP_SETPOINT_PEN := CL_AHU1_TEMPLOOP_SETPOINT + 1.5]
+schefile_dt[SS4_SFAN1_REF_est == 30, CL_AHU1_TEMPLOOP_SETPOINT_PEN := CL_AHU1_TEMPLOOP_SETPOINT + 0.0]
+schefile_dt[SS4_SFAN1_REF_est == 35, CL_AHU1_TEMPLOOP_SETPOINT_PEN := CL_AHU1_TEMPLOOP_SETPOINT - 1.5]
+schefile_dt[SS4_SFAN1_REF_est == 40, CL_AHU1_TEMPLOOP_SETPOINT_PEN := CL_AHU1_TEMPLOOP_SETPOINT - 3.0]
+schefile_dt[SS4_SFAN1_REF_est == 45, CL_AHU1_TEMPLOOP_SETPOINT_PEN := CL_AHU1_TEMPLOOP_SETPOINT - 4.5]
+schefile_dt[SS4_SFAN1_REF_est == 50, CL_AHU1_TEMPLOOP_SETPOINT_PEN := CL_AHU1_TEMPLOOP_SETPOINT - 6.0]
+
+schefile_dt[SS4_SFAN1_REF_est == 35, SS2_RTD1_B := SS2_RTD1_B - 0.5]
+schefile_dt[SS4_SFAN1_REF_est == 40, SS2_RTD1_B := SS2_RTD1_B - 1.0]
+schefile_dt[SS4_SFAN1_REF_est == 45, SS2_RTD1_B := SS2_RTD1_B - 1.5]
+schefile_dt[SS4_SFAN1_REF_est == 50, SS2_RTD1_B := SS2_RTD1_B - 2.0]
+
+fwrite(schefile_dt, here("data", "idf", "run", "new_sche_file5.csv"))
+# ------------------------------------------------------------------------------
+# Check the result after using penalty coefficient to adjust the off-coil SAT setpoint (overwrite the schedule file values)
+
+# ------------------------------------------------------------------------------
+# Check fan Heat Loss to Air
+p_HeatLoss2Air <- ggplot2::ggplot(matched_melt_dt[grepl("Fan_heat_loss2Air", matched_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point(size=3, alpha=0.5) +
+  geom_line(size=2, alpha=0.5) +
+  facet_wrap(~model) +
+  labs(x = "Hour", y = "fan heat loss to air (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/rewrite_CHWTin_OAoff_penaltySAT/check_HeatLoss2Air.jpg"), plot = p_HeatLoss2Air, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+# Check the fan performance based on the measured data
+p_fanHz_Pa <- ggplot2::ggplot(matched_wide_dt, aes(`Fan_frequency_mea [Hz]`, `Fan_SP_AHU1_mea [Pa]`, color = as.factor(date))) +
+  geom_point(size=6, alpha=0.3) +
+  # geom_line(size=2, alpha=0.5) +
+  # facet_wrap(~as.factor(date)) +
+  labs(x = "Hz", y = "Pa") +
+  theme(legend.position = "top")
+
+p_fanHz_Pa2 <- ggplot2::ggplot(matched_wide_dt, aes(`Fan_frequency_mea [Hz]`, `Fan_SP_AHU1_mea [Pa]`, color = as.factor(date))) +
+  geom_point(size=3, alpha=0.5) +
+  # geom_line(size=2, alpha=0.5) +
+  facet_wrap(~as.factor(date)) +
+  labs(x = "Hz", y = "Pa") +
+  theme(legend.position = "top")
+
+p_fanHz_Pa3 <- ggplot2::ggplot(matched_wide_dt[date == "2021-05-21", ], aes(`Fan_frequency_mea [Hz]`, `Fan_SP_AHU1_mea [Pa]`, color = as.factor(date))) +
+  geom_point(size=3, alpha=0.5) +
+  # geom_line(size=2, alpha=0.5) +
+  # facet_wrap(~as.factor(date)) +
+  labs(x = "Hz", y = "Pa") +
+  theme(legend.position = "top")
+
+ggplotly(p_fanHz_Pa3)
+ggplotly(p_fanHz_Pa)
+
+ggsave(filename = here::here("pic/rewrite_CHWTin_OAoff_penaltySAT/check_fanHz_Pa3.jpg"), plot = p_fanHz_Pa, dpi = 150, height = 6, width = 9)
+
+# Check the fan pressure under different fan speed
+p_fanHz_Pa4 <- ggplot2::ggplot(matched_wide_dt[error<=0.5, ], aes(`Fan_frequency_mea [Hz]`, `Fan_SP_AHU1_mea [Pa]`, color = as.factor(`Fan_frequency_est_mea [Hz]`))) +
+  geom_point(size=6, alpha=0.3) +
+  # geom_line(size=2, alpha=0.5) +
+  facet_wrap(~as.factor(date), nrow = 1) +
+  labs(x = "Hz", y = "Pa") +
+  theme(legend.position = "top")
+
+p_fanHz_Pa5 <- ggplot2::ggplot(matched_wide_dt[date != as.Date("2021-05-18") & date != as.Date("2021-05-20"), ], aes(`Fan_frequency_mea [Hz]`, `Fan_SP_AHU1_mea [Pa]`, color = as.factor(`Fan_frequency_est_mea [Hz]`))) +
+  geom_point(size=6, alpha=0.3) +
+  # geom_line(size=2, alpha=0.5) +
+  facet_wrap(~as.factor(date), nrow = 1) +
+  labs(x = "Hz", y = "Pa") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/rewrite_CHWTin_OAoff_penaltySAT/check_fanHz_Pa5b.jpg"), plot = p_fanHz_Pa5, dpi = 150, height = 5, width = 14)
+
+p_fanHz_DP_Pa <- ggplot2::ggplot(matched_wide_dt[date != as.Date("2021-05-18") & date != as.Date("2021-05-20"), ], aes(`Fan_frequency_mea [Hz]`, `Fan_TOTALP_mea [Pa]`, color = as.factor(`Fan_frequency_est_mea [Hz]`))) +
+  geom_point(size=6, alpha=0.3) +
+  # geom_line(size=2, alpha=0.5) +
+  facet_wrap(~as.factor(date), nrow = 1) +
+  labs(x = "Hz", y = "Fan total pressure [Pa]") +
+  theme(legend.position = "top")
+
+p_fanHz_DP_0524 <- ggplot2::ggplot(matched_wide_dt[date == as.Date("2021-05-24"), ], aes(`Fan_frequency_mea [Hz]`, `Fan_TOTALP_mea [Pa]`, color = as.factor(`Fan_frequency_est_mea [Hz]`))) +
+  geom_point(size=6, alpha=0.3) +
+  # geom_line(size=2, alpha=0.5) +
+  facet_wrap(~as.factor(date), nrow = 1) +
+  labs(x = "Hz", y = "Fan total pressure [Pa]") +
+  theme(legend.position = "top")
+
+ggplotly(p_fanHz_DP_0524)
+
+ggsave(filename = here::here("pic/rewrite_CHWTin_OAoff_penaltySAT/check_fanHz_TotalPressure.jpg"), plot = p_fanHz_DP_Pa, dpi = 150, height = 5, width = 14)
+
+p_fanHz_Pa6 <- ggplot2::ggplot(matched_wide_dt[date == as.Date("2021-05-24"), ], aes(`Fan_frequency_mea [Hz]`, `Fan_SP_AHU1_mea [Pa]`, color = as.factor(`Fan_frequency_est_mea [Hz]`))) +
+  geom_point(size=6, alpha=0.3) +
+  # geom_line(size=2, alpha=0.5) +
+  facet_wrap(~as.factor(date), nrow = 1) +
+  labs(x = "Hz", y = "Pa") +
+  theme(legend.position = "top")
+
+ggplotly(p_fanHz_Pa6)
+
+# ------------------------------------------------------------------------------
+p_fanHz_TnotMet <- ggplot2::ggplot(matched_wide_dt, aes(`Fan_frequency_mea [Hz]`, error)) +
+  geom_point(size=3, alpha=0.5) +
+  # geom_line(size=2, alpha=0.5) +
+  facet_wrap(~as.factor(date)) +
+  labs(x = "Hz", y = "Indoor temp not met (C)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/rewrite_CHWTin_OAoff_penaltySAT/check_TnotMet.jpg"), plot = p_fanHz_TnotMet, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+p_fanHz_Power <- ggplot2::ggplot(matched_wide_dt, aes(`Fan_frequency_mea [Hz]`, `Fan_Power_mea [W]`, color = as.factor(date))) +
+  geom_point(size=3, alpha=0.5) +
+  # geom_line(size=2, alpha=0.5) +
+  # facet_wrap(~as.factor(date)) +
+  labs(x = "Hz", y = "fan power (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/rewrite_CHWTin_OAoff_penaltySAT/check_fanHz_Power.jpg"), plot = p_fanHz_Power, dpi = 150, height = 6, width = 9)
+
+p_fanHz_Power <- ggplot2::ggplot(matched_wide_dt, aes(`Fan_frequency_mea [Hz]`, `Fan_Power_mea [W]`, color = as.factor(`Fan_frequency_est_mea [Hz]`))) +
+  geom_point(size=6, alpha=0.5) +
+  # geom_line(size=2, alpha=0.5) +
+  facet_wrap(~as.factor(date), nrow = 1) +
+  labs(x = "Hz", y = "fan power (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/rewrite_CHWTin_OAoff_penaltySAT/check_fanHz_Power2b.jpg"), plot = p_fanHz_Power, dpi = 150, height = 5, width = 14)
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Check Fan flow
+p_fanHz_flow_est <- ggplot2::ggplot(matched_wide_dt, aes(`Fan_frequency_est_mea [Hz]`, `SA_offcoil_flow_rate_CalbyDamper_mea [m3/s]`, color = as.factor(`Fan_frequency_est_mea [Hz]`))) +
+  geom_point(size=6, alpha=0.5) +
+  # geom_line(size=2, alpha=0.5) +
+  facet_wrap(~as.factor(date), nrow = 1) +
+  labs(x = "Hz", y = "fan Volume flow rate (m3/s)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/rewrite_CHWTin_OAoff_penaltySAT/check_fanHz_Fanflow_est.jpg"), plot = p_fanHz_flow_est, dpi = 150, height = 5, width = 14)
+# ------------------------------------------------------------------------------
+# Check the trend in all simulation cases
+# ******************************************************************************
+# Check off-coil SA mass flow rate
+# ******************************************************************************
+schefile_dt <- fread(here("data", "idf", "run", "new_sche_file2.csv"))
+schefile_dt[, date := as.Date(datetime)]
+schefile_dt[, hour := hour(datetime)]
+
+schefile_dt[date == as.Date("2021-05-21") & CL_AHU1_TEMPLOOP_SETPOINT > 11, CL_AHU1_TEMPLOOP_SETPOINT := CL_AHU1_TEMPLOOP_SETPOINT - 1L]
+
+fwrite(schefile_dt, here("data", "idf", "run", "new_sche_file2b.csv"))
+schefile_dt <- fread(here("data", "idf", "run", "new_sche_file2b.csv"))
+
+
+# schefile_dt2 <- separate(schefile_dt, datetime, c("date2", "time"), sep = " ", remove = FALSE)
+
+schefile_SS4_MassFLOW_AHU1 <- schefile_dt[date == as.Date("2021-05-21"), ][, lapply(.SD, mean, na.rm = TRUE), by = hour, .SDcols = c("SS4_MassFLOW_AHU1")]
+
+sim_SA_Mass_Flow_Rate <- matched_melt_dt[grepl("offcoil_SA_Mass_Flow_Rate", matched_melt_dt$variable), ]
+
+check_SA_Mass_Flow_Rate <- schefile_SS4_MassFLOW_AHU1
+check_SA_Mass_Flow_Rate$sim_SA_Mass_Flow_Rate <- sim_SA_Mass_Flow_Rate$value
+
+check_SA_Mass_Flow_Rate_melt <- melt(check_SA_Mass_Flow_Rate, id = c("hour")) 
+
+p_SA_mass_flow_rate_sim <- ggplot2::ggplot(sim_SA_Mass_Flow_Rate, aes(hour, value, color = variable)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~model) +
+  labs(x = "Hour", y = "SA mass flow rate (Kg/s)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/rewrite_CHW_Tin_EMSSA/check_SA_volume_flow_rate_multi.jpg"), plot = p_SA_mass_flow_rate_sim, dpi = 150, height = 6, width = 9)
+
+p_SA_mass_flow_rate <- ggplot2::ggplot(check_SA_Mass_Flow_Rate_melt, aes(hour, value, color = variable)) +
+  geom_point() +
+  geom_line() +
+  # facet_wrap(~model, scales = "free_x") +
+  labs(x = "Hour", y = "SA mass flow rate (Kg/s)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/rewrite_CHW_Tin_EMSSA/check_SA_volume_flow_rate.jpg"), plot = p_SA_mass_flow_rate, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+
+# ******************************************************************************
+# Check coil inlet node simulated SA mass flow rate & setpoint manager scheduled
+# ******************************************************************************
+schefile_dt <- fread(here("data", "idf", "run", "new_sche_file2_2.csv"))
+schefile_dt[, date := as.Date(datetime)]
+schefile_dt[, hour := hour(datetime)]
+
+schefile_FAN_MASS_FLOW <- schefile_dt[date == as.Date("2021-05-21"), ][, lapply(.SD, mean, na.rm = TRUE), by = hour, .SDcols = c("FAN_MASS_FLOW")]
+
+sim_MA_Mass_Flow_Rate <- matched_melt_dt[grepl("coil_inlet_MA_Mass_Flow_Rate", matched_melt_dt$variable), ]
+
+check_MA_Mass_Flow_Rate <- schefile_FAN_MASS_FLOW
+check_MA_Mass_Flow_Rate$sim_MA_Mass_Flow_Rate <- sim_MA_Mass_Flow_Rate$value
+
+check_MA_Mass_Flow_Rate_melt <- melt(check_MA_Mass_Flow_Rate, id = c("hour"))
+
+p_MA_mass_flow_rate <- ggplot2::ggplot(check_MA_Mass_Flow_Rate_melt, aes(hour, value, color = variable)) +
+  geom_point(size=6) +
+  geom_line() +
+  # facet_wrap(~model, scales = "free_x") +
+  labs(x = "Hour", y = "MA (Coil-inlet) mass flow rate (Kg/s)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/CAV_MA_offcoil_mass_flow_rate_3-6.jpg"), plot = p_MA_mass_flow_rate, dpi = 150, height = 6, width = 9)
+
+matched_melt_dt2 <- fread(here("pic", "CAV", "matched_melt_dt_CAV3-4.csv"))
+check_MA_Mass_Flow_Rate$sim_MA_Mass_Flow_Rate3_5 <- matched_melt_dt2[grepl("coil_inlet_MA_Mass_Flow_Rate", matched_melt_dt$variable), ]$value
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Check outdoor air
+p_OA_std_volume_flow_rate <- ggplot2::ggplot(matched_melt_dt[grepl("OA_inlet_Standard_Density_Volume_Flow_Rate", matched_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "OA std volume flow rate (m3/s)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/rewrite_CHW_Tin/check_OA_std_VFR_3-1-7_check.jpg"), plot = p_OA_std_volume_flow_rate, dpi = 150, height = 6, width = 9)
+
+# Check simulated Room SA mass flow rate
+p_offcoilSA_mass_flow_rate <- ggplot2::ggplot(matched_melt_dt[grepl("offcoil_SA_Mass_Flow_Rate", matched_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "offcoil SA mass flow rate (kg/s)") +
+  theme(legend.position = "top")
+
+fwrite(mea_sim_dt, file = here("data", "csv", "temp_mea_sim_dt.csv"))
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+```
+
+Check air side cooling load
+
+```{r}
+# ------------------------------------------------------------------------------
+# Read raw data of cooling load and DBT
+air_side_dt <- select(matched_wide_dt, "date", "datetime", "hour", 
+                      (contains("room_SA_Volume_Flow_Rate") | 
+                         contains("room_SA_T") | 
+                         contains("room_SA_RH") | 
+                         contains("room_RA_Volume_Flow_Rate") |
+                         contains("room_RA_T") | 
+                         contains("room_RA_RH") | 
+
+                         contains("offcoil_SA_Current_Density_Volume_Flow_Rate_sim") | 
+                         contains("offcoil_SA_temp") |
+                         contains("offcoil_SA_RH") | 
+                         
+                         # Cooling coil inlet node
+                         contains("coil_inlet_MA_T") |
+                         contains("coil_inlet_MA_RH") |
+                         contains("coil_inlet_MA_Humidity_Ratio") |
+                         contains("coil_inlet_MA_Current_Density_Volume_Flow_Rate_sim") |
+                         # Cooling coil outlet node
+                         contains("coil_outlet_air_Temperature") |
+                         contains("coil_outlet_Humidity_Ratio_sim") |
+                         contains("coil_outlet_Current_Density_Volume_Flow_Rate_sim") |
+                      
+                         
+                         contains("ROOM3_ZoneMeanAir_TEMP") |
+                         contains("ROOM3_ZoneAir_RH") |
+                         contains("CHW_cooling_rate") |
+
+                         contains("SS5_ROOM3_TEMP_Setpoint") |
+                         contains("offcoil_SA_temp_Setpoint_sim") |
+                         contains("Fan_frequency_mea") |
+                         contains("Fan_frequency_est_mea")
+                       )
+                      )
+# ------------------------------------------------------------------------------
+SetUnitSystem("SI")
+
+air_side_dt[, SA_HumidityRatio_mea := GetHumRatioFromRelHum(air_side_dt$`room_SA_T_mea`, air_side_dt$`room_SA_RH_mea` / 100, 95461.0)]
+air_side_dt[, RA_HumidityRatio_mea := GetHumRatioFromRelHum(air_side_dt$`room_RA_T_mea`, air_side_dt$`room_RA_RH_mea` / 100, 95461.0)]
+
+air_side_dt[, SA_HumidityRatio_sim := GetHumRatioFromRelHum(air_side_dt$`room_SA_T_sim`, air_side_dt$`room_SA_RH_sim` / 100, 95461.0)]
+air_side_dt[, RA_HumidityRatio_sim := GetHumRatioFromRelHum(air_side_dt$`room_RA_T_sim`, air_side_dt$`room_RA_RH_sim` / 100, 95461.0)]
+# ------------------------------------------------------------------------------
+# Calculate total cooling load of supply air to room (W)
+air_side_dt[, SA_clg_load_latent_mea := 1.202 * 2454 * air_side_dt$`room_RA_Volume_Flow_Rate_mea [m3/s]` *
+              (air_side_dt$RA_HumidityRatio_mea - air_side_dt$SA_HumidityRatio_mea) * 1000]
+
+air_side_dt[, SA_clg_load_sensible_mea := (air_side_dt$`room_RA_T_mea`- air_side_dt$`room_SA_T_mea`) *
+                   (air_side_dt$`room_RA_Volume_Flow_Rate_mea [m3/s]`) * 1006 * 1.202]
+
+air_side_dt[, SA_clg_load_total_mea := SA_clg_load_latent_mea + SA_clg_load_sensible_mea]
+# ------------------------------------------------------------------------------
+air_side_dt[, SA_clg_load_latent_sim := 1.202 * 2454 * air_side_dt$`room_RA_Volume_Flow_Rate_sim [m3/s]` *
+              (air_side_dt$RA_HumidityRatio_sim - air_side_dt$SA_HumidityRatio_sim) * 1000]
+
+air_side_dt[, SA_clg_load_sensible_sim := (air_side_dt$`room_RA_T_sim`- air_side_dt$`room_SA_T_sim`) *
+                   (air_side_dt$`room_RA_Volume_Flow_Rate_sim [m3/s]`) * 1006 * 1.202]
+
+air_side_dt[, SA_clg_load_total_sim := SA_clg_load_latent_sim + SA_clg_load_sensible_sim]
+# ------------------------------------------------------------------------------
+fwrite(air_side_dt, file = here("data", "csv", "air_side_clgload.csv"))
+air_side_dt <- fread(here("data", "csv", "clgload.csv"))
+# ------------------------------------------------------------------------------
+# Visualization Pre-processing
+# air_side_melt_dt <- melt(air_side_dt, id=c("datetime", "date", "hour", "error"))
+air_side_melt_dt <- melt(air_side_dt, id=c("datetime", "date", "hour"))
+air_side_melt_dt[grepl("mea", air_side_melt_dt$variable)==TRUE, tag:="measured"]
+air_side_melt_dt[grepl("sim", air_side_melt_dt$variable)==TRUE, tag:="simulated"]
+
+# ******************************************************************************
+# Visualization
+# ******************************************************************************
+
+# Check the room side total cooling load against the water side cooling rate
+p_room_clgload <- ggplot2::ggplot(air_side_melt_dt[grepl("SA_clg_load_total", air_side_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point(size=5) +
+  geom_line() +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "Measured Zone Cooling Load (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/check_zone_load_3-2_model1.jpg"),
+       plot = p_room_clgload, dpi = 150, height = 6, width = 9)
+
+p_room_latent_clgload <- ggplot2::ggplot(air_side_melt_dt[grepl("SA_clg_load_latent", air_side_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point(size=5) +
+  geom_line() +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "Measured Zone Latent Cooling Load (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/check_zone_latent_clgload.jpg"),
+       plot = p_room_latent_clgload, dpi = 150, height = 6, width = 9)
+
+p_room_sensible_clgload <- ggplot2::ggplot(air_side_melt_dt[grepl("SA_clg_load_sensible", air_side_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point(size=5) +
+  geom_line() +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "Measured Zone Sensible Cooling Load (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/check_zone_Sensible_clgload.jpg"),
+       plot = p_room_sensible_clgload, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+# Chech the room RH
+p_room_SAT <- ggplot2::ggplot(air_side_melt_dt[grepl("room_SA_T", air_side_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point(size=5) +
+  geom_line() +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "SAT (C)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/check_room_SAT.jpg"),
+       plot = p_room_SAT, dpi = 150, height = 6, width = 9)
+
+p_room_RAT <- ggplot2::ggplot(air_side_melt_dt[grepl("room_RA_T", air_side_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point(size=5) +
+  geom_line() +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "RAT (C)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/check_room_RAT.jpg"),
+       plot = p_room_RAT, dpi = 150, height = 6, width = 9)
+
+p_SA_RA_VFR <- ggplot2::ggplot(matched_melt_dt[grepl("room_SA_Volume_Flow_Rate|room_RA_Volume_Flow_Rate", matched_melt_dt$variable), ], aes(hour, value, color = variable)) +
+    geom_point(size=6) +
+    geom_line() +
+    # scale_x_datetime(breaks=scales::date_breaks("6 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+  facet_wrap(~tag, nrow = 2) +
+  labs(x = "Hour", y = "SA/RA Volume Flow Rate (m3/s)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/CAV/check_VFR_SA_RA_3-1-4b.jpg"),
+       plot = p_SA_RA_VFR, dpi = 150, height = 12, width = 9)
+
+p_CHW_clgload <- ggplot2::ggplot(air_side_melt_dt[grepl("CHW_cooling_rate", air_side_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point(size=5) +
+  geom_line() +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "Measured CHW Cooling Rate (W)") +
+  theme(legend.position = "top")
+
+p_room_CHW_clgload_sim <- ggplot2::ggplot(air_side_melt_dt[grepl("SA_clg_load_total_sim|ClgCoil_Cooling_rate_sim", air_side_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "simsured room/water side cooling rate (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_room_CHW_clgload_sim.jpg"),
+       plot = p_room_CHW_clgload_sim, dpi = 150, height = 6, width = 9)
+
+p_SA_clgload <- ggplot2::ggplot(air_side_melt_dt[grepl("SA_clg_load_total", air_side_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  # scale_x_datetime(breaks=scales::date_breaks("4 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+    # scale_x_continuous(breaks=scales::date_breaks("4 hours"), labels = function(x) stringr::str_wrap(x, width = 6)) +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "SA Total Clg Load (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/diff_SA_clg_load.jpg"),
+       plot = p_SA_clgload, dpi = 150, height = 6, width = 9)
+
+# Check Fan speed
+p_fan_hz <- ggplot2::ggplot(air_side_melt_dt[grepl("Fan_frequency", air_side_melt_dt$variable), ], aes(hour, value)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Fan speed (Hz)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_fan_speed.jpg"),
+       plot = p_fan_hz, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+# Check SAT/ SARH/ SAF
+p_SAT <- ggplot2::ggplot(air_side_melt_dt[grepl("SAT", air_side_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Supply Air Temperature (C)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_SAT.jpg"),
+       plot = p_SAT, dpi = 150, height = 6, width = 9)
+
+p_SARH <- ggplot2::ggplot(air_side_melt_dt[grepl("SARH", air_side_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Supply Air RH (%)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_SARH.jpg"),
+       plot = p_SARH, dpi = 150, height = 6, width = 9)
+
+p_SAVF <- ggplot2::ggplot(air_side_melt_dt[grepl("SA_flow_rate", air_side_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Supply Air Volume Flow Rate (m3/s)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_SAVF.jpg"),
+       plot = p_SAVF, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+# p_RoomT <- ggplot2::ggplot(air_side_melt_dt[grepl("SS5_ROOM3_TEMP", air_side_melt_dt$variable), ], aes(hour, value, color = tag)) +
+#   geom_point() +
+#   geom_line() +
+#   facet_wrap(~as.factor(date), scales = "free_x") +
+#   labs(x = "Datetime", y = "Room3 Air Temperature (C)") +
+#   theme(legend.position = "top")
+# 
+# ggsave(filename = here::here("pic/check_roomT.jpg"),
+#        plot = p_RoomT, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+# Check RAT/ RARH/ RAF
+p_RAT <- ggplot2::ggplot(air_side_melt_dt[grepl("RAT", air_side_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Return Air Temperature (C)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_RAT.jpg"),
+       plot = p_RAT, dpi = 150, height = 6, width = 9)
+
+p_RARH <- ggplot2::ggplot(air_side_melt_dt[grepl("RARH", air_side_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Return Air RH (%)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_RARH.jpg"),
+       plot = p_RARH, dpi = 150, height = 6, width = 9)
+
+p_RAVF <- ggplot2::ggplot(air_side_melt_dt[grepl("RA_flow_rate", air_side_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Return Air Volume Flow Rate (m3/s)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_RAVF.jpg"),
+       plot = p_RAVF, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+# Check MAT/ MARH (off-coil inlet)
+p_MAT <- ggplot2::ggplot(air_side_melt_dt[grepl("MAT|Fan_frequency", air_side_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Mixed Air Temperature (C)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_MAT_withFanHz.jpg"),
+       plot = p_MAT, dpi = 150, height = 6, width = 9)
+
+p_MAT2 <- ggplot2::ggplot(air_side_melt_dt[grepl("MAT", air_side_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Mixed Air Temperature (C)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_MAT.jpg"),
+       plot = p_MAT2, dpi = 150, height = 6, width = 9)
+
+p_MARH <- ggplot2::ggplot(air_side_melt_dt[grepl("MARH", air_side_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Mixed Air RH (%)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_MARH.jpg"),
+       plot = p_MARH, dpi = 150, height = 6, width = 9)
+
+
+
+# Check the off-coil air outlet
+p_SAT_offcoil <- ggplot2::ggplot(air_side_melt_dt[grepl("SA_offcoil_temp", air_side_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Off-coil Outlet Air temperature (C)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_offcoil-SAT.jpg"),
+       plot = p_SAT_offcoil, dpi = 150, height = 6, width = 9)
+
+
+p_SARH_offcoil <- ggplot2::ggplot(air_side_melt_dt[grepl("SA_offcoil_RH", air_side_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Off-coil Outlet RH (%)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_offcoil-RH.jpg"),
+       plot = p_SARH_offcoil, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+# Check SAVF & RAVF
+p_SA_RAVF_mea <- ggplot2::ggplot(air_side_melt_dt[grepl("SA_flow_rate_mea|RA_flow_rate_mea", air_side_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Measured SA/RA Volume Flow Rate (m3/s)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_measured_SA_RAVF.jpg"),
+       plot = p_SA_RAVF_mea, dpi = 150, height = 6, width = 9)
+
+p_SA_RAVF_sim <- ggplot2::ggplot(air_side_melt_dt[grepl("SA_flow_rate_sim|RA_flow_rate_sim", air_side_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Simulated SA/RA Volume Flow Rate (m3/s)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_simulated_SA_RAVF.jpg"),
+       plot = p_SA_RAVF_sim, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+# Check CHW cooling rate
+# ******************************************************************************
+p_CHW_clgRate <- ggplot2::ggplot(air_side_melt_dt[grepl("ClgCoil_Cooling_rate", air_side_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "CHW ClgCoil Clg Rate (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_CHW_clgRate.jpg"),
+       plot = p_CHW_clgRate, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+# Check Off-coil SA cooling load
+# 1. latent
+p_offcoil_clgload_la <- ggplot2::ggplot(air_side_melt_dt[grepl("clgcoil_clg_load_latent_mea3|clgcoil_clg_load_latent_sim", air_side_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Cooling coil latent cooling load (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_offcoil_clgload_la.jpg"),
+       plot = p_offcoil_clgload_la, dpi = 150, height = 6, width = 9)
+
+# 2. sensible
+p_offcoil_clgload_sen <- ggplot2::ggplot(air_side_melt_dt[grepl("clgcoil_clg_load_sensible_mea3|clgcoil_clg_load_sensible_sim", air_side_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Cooling coil sensible cooling load (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_offcoil_clgload_sen.jpg"),
+       plot = p_offcoil_clgload_sen, dpi = 150, height = 6, width = 9)
+
+# 3. total
+p_offcoil_clgload_tot <- ggplot2::ggplot(air_side_melt_dt[grepl("clgcoil_clg_load_total_mea4|clgcoil_clg_load_total_sim2", air_side_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Cooling coil total cooling load (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_offcoil_clgload_total.jpg"),
+       plot = p_offcoil_clgload_tot, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+# Further visualization of the cooling coil air cooling load
+# Calculate the humidity ratio based on supply air flow rate BEFORE VAV
+
+                         # contains("MAT_mea [C]") |
+                         # contains("MAT_sim [C]") |
+                         # contains("MARH_mea [%]") |
+                         # contains("MARH_sim [%]") |
+  
+                         # contains("SA_offcoil_temp_mea [C]") |
+                         # contains("SA_offcoil_temp_sim [C]") |
+                         # contains("SA_offcoil_RH_mea [%]") |
+                         # contains("SA_offcoil_RH_sim [%]") |
+                         # contains("SA_offcoil_flow_rate_sim [m3/s]")),
+
+air_side_dt[, clgcoil_in_HumidityRatio_mea := GetHumRatioFromRelHum(air_side_dt$`MAT_mea [C]`, air_side_dt$`MARH_mea [%]` / 100, 95461.0)]
+air_side_dt[, clgcoil_out_HumidityRatio_mea := GetHumRatioFromRelHum(air_side_dt$`SA_offcoil_temp_mea [C]`, air_side_dt$`SA_offcoil_RH_mea [%]` / 100, 95461.0)]
+
+air_side_dt[, clgcoil_in_HumidityRatio_sim := GetHumRatioFromRelHum(air_side_dt$`MAT_sim [C]`, air_side_dt$`MARH_sim [%]` / 100, 95461.0)]
+air_side_dt[, clgcoil_out_HumidityRatio_sim := GetHumRatioFromRelHum(air_side_dt$`SA_offcoil_temp_sim [C]`, air_side_dt$`SA_offcoil_RH_sim [%]` / 100, 95461.0)]
+# ------------------------------------------------------------------------------
+# Calculate total cooling load of cooling coil air (W)
+air_side_dt[, clgcoil_clg_load_latent_mea := 
+              1.202 * 2454 * air_side_dt$`SA_offcoil_flow_rate_CalbyDamper_mea [m3/s]` *
+              (air_side_dt$clgcoil_out_HumidityRatio_mea - air_side_dt$clgcoil_in_HumidityRatio_mea) * 1000]
+
+air_side_dt[, clgcoil_clg_load_sensible_mea := 
+              (air_side_dt$`SA_offcoil_temp_mea [C]`- air_side_dt$`MAT_mea [C]`) *
+                   (air_side_dt$`SA_offcoil_flow_rate_CalbyDamper_mea [m3/s]`) * 1006 * 1.202]
+
+air_side_dt[, clgcoil_clg_load_total_mea := clgcoil_clg_load_latent_mea + clgcoil_clg_load_sensible_mea]
+# ------------------------------------------------------------------------------
+air_side_dt[, clgcoil_clg_load_latent_sim := 
+              1.202 * 2454 * air_side_dt$`SA_offcoil_flow_rate_sim [m3/s]` *
+              (air_side_dt$clgcoil_out_HumidityRatio_sim - air_side_dt$clgcoil_in_HumidityRatio_sim) * 1000]
+
+air_side_dt[, clgcoil_clg_load_sensible_sim := 
+              (air_side_dt$`SA_offcoil_temp_sim [C]`- air_side_dt$`MAT_sim [C]`) *
+                   (air_side_dt$`SA_offcoil_flow_rate_sim [m3/s]`) * 1006 * 1.202]
+
+air_side_dt[, clgcoil_clg_load_total_sim := clgcoil_clg_load_latent_sim + clgcoil_clg_load_sensible_sim]
+# ------------------------------------------------------------------------------
+air_side_dt[, clgcoil_clg_load_total_mea2 := clgcoil_clg_load_total_mea * (-1)]
+air_side_dt[, clgcoil_clg_load_total_sim2 := clgcoil_clg_load_total_sim * (-1)]
+
+air_side_dt[, coil_eff_mea := clgcoil_clg_load_total_mea2 / `ClgCoil_Cooling_rate_mea [W]`]
+air_side_dt[, coil_eff_sim := clgcoil_clg_load_total_sim2 / `ClgCoil_Cooling_rate_sim [W]`]
+
+air_side_dt[, coil_eff_mea := clgcoil_clg_load_total_mea4 / `ClgCoil_Cooling_rate_mea [W]`]
+air_side_dt[, coil_eff_sim := clgcoil_clg_load_total_sim2 / `ClgCoil_Cooling_rate_sim [W]`]
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Calculate the humidity ratio based on supply air flow rate AFTER VAV
+air_side_dt[, clgcoil_clg_load_latent_mea3 := 
+              1.202 * 2454 * air_side_dt$`SA_flow_rate_mea [m3/s]` *
+              (air_side_dt$clgcoil_out_HumidityRatio_mea - air_side_dt$clgcoil_in_HumidityRatio_mea) * 1000]
+
+air_side_dt[, clgcoil_clg_load_sensible_mea3 := 
+              (air_side_dt$`SA_offcoil_temp_mea [C]`- air_side_dt$`MAT_mea [C]`) *
+                   (air_side_dt$`SA_flow_rate_mea [m3/s]`) * 1006 * 1.202]
+
+air_side_dt[, clgcoil_clg_load_total_mea3 := clgcoil_clg_load_latent_mea3 + clgcoil_clg_load_sensible_mea3]
+
+air_side_dt[, clgcoil_clg_load_total_mea4 := clgcoil_clg_load_total_mea3 * (-1)]
+# ------------------------------------------------------------------------------
+air_side_dt[, clgcoil_clg_load_latent_sim := 
+              1.202 * 2454 * air_side_dt$`SA_offcoil_flow_rate_sim [m3/s]` *
+              (air_side_dt$clgcoil_out_HumidityRatio_sim - air_side_dt$clgcoil_in_HumidityRatio_sim) * 1000]
+
+air_side_dt[, clgcoil_clg_load_sensible_sim := 
+              (air_side_dt$`SA_offcoil_temp_sim [C]`- air_side_dt$`MAT_sim [C]`) *
+                   (air_side_dt$`SA_offcoil_flow_rate_sim [m3/s]`) * 1006 * 1.202]
+
+air_side_dt[, clgcoil_clg_load_total_sim := clgcoil_clg_load_latent_sim + clgcoil_clg_load_sensible_sim]
+# ------------------------------------------------------------------------------
+fwrite(air_side_dt, file = here("data", "csv", "clgload.csv"))
+# ------------------------------------------------------------------------------
+# Check the coil air load and CHW cooling load
+p_coil_air_CHW_clgload_mea <- ggplot2::ggplot(air_side_melt_dt[grepl("clgcoil_clg_load_total_mea4|ClgCoil_Cooling_rate_mea", air_side_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Measured coil air/water side cooling rate (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_coil_clgload_mea2.jpg"),
+       plot = p_coil_air_CHW_clgload_mea, dpi = 150, height = 6, width = 9)
+
+p_coil_air_CHW_clgload_sim <- ggplot2::ggplot(air_side_melt_dt[grepl("clgcoil_clg_load_total_sim2|ClgCoil_Cooling_rate_sim", air_side_melt_dt$variable), ], aes(hour, value, color = variable)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Simulated coil air/water side cooling rate (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/check_coil_clgload_sim2.jpg"),
+       plot = p_coil_air_CHW_clgload_sim, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+p_coil_efficiency <- ggplot2::ggplot(air_side_melt_dt[grepl("coil_eff_mea|", air_side_melt_dt$variable), ], aes(hour, value, color = tag)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Datetime", y = "Cooling coil water to air efficency (%)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/coil_efficiency.jpg"),
+       plot = p_coil_efficiency, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+# Check Coil efficiency
+p_fanHz_CoilEfficiency <- ggplot2::ggplot(air_side_dt[, c("date", "Fan_frequency_mea [Hz]", "coil_eff_mea")], aes(`Fan_frequency_mea [Hz]`, coil_eff_mea)) +
+  geom_point(size=3) +
+  facet_wrap(~as.factor(date)) +
+  labs(x = "Fan speed (Hz)", y = "Cooling coil water to air efficency (%)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/fanHz_CoilEfficiency1.jpg"),
+       plot = p_fanHz_CoilEfficiency, dpi = 150, height = 6, width = 9)
+
+p_fanHz_CoilEfficiency2 <- ggplot2::ggplot(air_side_dt[, c("date", "Fan_frequency_mea [Hz]", "coil_eff_mea")], aes(`Fan_frequency_mea [Hz]`, coil_eff_mea, color = as.factor(date))) +
+  geom_point(size=3) +
+  labs(x = "Fan speed (Hz)", y = "Cooling coil water to air efficency (%)") +
+  theme(legend.position = "top") +
+  scale_color_brewer(palette = "Set2", name=element_blank())
+
+ggsave(filename = here::here("pic/fanHz_CoilEfficiency2.jpg"),
+       plot = p_fanHz_CoilEfficiency2, dpi = 150, height = 6, width = 9)
+
+# Draw scatter plot with simulation values
+p_fanHz_CoilEfficiency3 <- ggplot2::ggplot(air_side_dt[, c("date", "Fan_frequency_mea [Hz]", "coil_eff_sim")], aes(`Fan_frequency_mea [Hz]`, coil_eff_sim, color = as.factor(date))) +
+  geom_point(size=3) +
+  labs(x = "Fan speed (Hz)", y = "Cooling coil water to air efficency (Simulated) (%)") +
+  theme(legend.position = "top") +
+  scale_color_brewer(palette = "Set2", name=element_blank())
+
+ggsave(filename = here::here("pic/fanHz_CoilEfficiency3.jpg"),
+       plot = p_fanHz_CoilEfficiency3, dpi = 150, height = 6, width = 9)
+```
+
+Further edit schedule file path
+
+```{r}
+schefile_dt <- fread(here("data", "idf", "run", "new_sche_file2.csv"))
+pi_dt <- fread(here("data", "pi", "pi_data_May10_July15.csv"))
+
+pi_dt2 <- pi_dt %>% select_if(function(col) is.numeric(col) | is.integer(col))
+pi_dt2$datetime <- pi_dt$datetime
+pi_dt2$datetime <- ymd_hms(pi_dt2$datetime)
+
+pi_dt2$date <- as.Date(pi_dt2$datetime)
+
+pi_dt2 <- select(pi_dt2, "index", "id", "date", "hour", everything())
+
+cols <- names(pi_dt2)
+cols_val <- setdiff(cols, c("index", "id", "date", "hour"))
+pi_dt_hourly <- pi_dt2[, lapply(.SD, mean), .SDcols = cols_val, c("date", "hour")]
+
+pi_dt_hourly$datetime <- lubridate::ymd_h(
+    stringr::str_c(pi_dt_hourly$date, pi_dt_hourly$hour, sep = " "))
+
+pi_dt_hourly <- dplyr::select(pi_dt_hourly, "datetime", everything())
+
+schefile_dt$SS4_SAFMS3_FLOW <- mea_sim_dt$Fan_Flow
+
+```
+
+Further check the relationship between the CHW cooling rate and the fan speed, SAT (off-coil), and Zone Temperature Setpoint
+
+```{r}
+
+names(pi_dt) <- gsub(".*\\|", "", names(pi_dt))
+
+setpoint_dt <- select(pi_dt, "datetime", (
+  contains("CL_AHU1_TEMPLOOP_SETPOINT") | 
+    contains("CL_ROOM3_TEMPLOOP_SETPOINT") | 
+    contains("SS2_AHU1_THERMALPOWER") | 
+    contains("SS2_FLOW1") |
+    contains("SS2_RTD1_A") |
+    contains("SS2_RTD1_B") |
+    contains("SS5_ROOM3_TEMP") |
+    contains("SS4_SFAN1_REF") |
+    contains("SS4_SFAN1_SPEED") |
+    contains("SS4_SFAN1_POWER")
+  ))
+
+x <- c(0L, 5L, 10L, 15L, 20L, 25L, 30L, 35L, 40L, 45L, 50L)
+
+setpoint_dt[, SS4_SFAN1_REF_est := closest(SS4_SFAN1_REF)]
+
+setpoint_wide_dt <- melt(setpoint_dt, id=c("datetime"))
+
+setpoint_dt$datetime <- ymd_hms(setpoint_dt$datetime)
+
+setpoint_dt <- separate(setpoint_dt, datetime, c("date", "time"), sep = " ", remove = FALSE)
+
+setpoint_dt$date <- as.Date(setpoint_dt$date)
+setpoint_dt$date2 <- as.character(setpoint_dt$date)
+
+p_setpoint <- ggplot2::ggplot(setpoint_dt[date2 %in% c("2021-05-17", "2021-05-18", "2021-05-19", "2021-05-20", "2021-05-21", "2021-05-24", "2021-05-26", "2021-05-28", "2021-07-04"), ], aes(SS4_SFAN1_REF, SS2_AHU1_THERMALPOWER, color= SS2_RTD1_B)) +
+  geom_point(alpha=0.5) +
+  # geom_line() +
+  facet_grid(as.factor(CL_ROOM3_TEMPLOOP_SETPOINT) ~ as.factor(CL_AHU1_TEMPLOOP_SETPOINT)) +
+  labs(x = "Fan speed (Hz)", y = "Measured CHW cooling rate (W)") +
+  theme(legend.position = "top")
+
+ggsave(filename = here::here("pic/pi_CHW_clg_rate2.jpg"),
+       plot = p_setpoint, dpi = 150, height = 6, width = 9)
+# ------------------------------------------------------------------------------
+# No need to run
+matched_melt_dt[, ]
+
+pi_dt <- separate(pi_dt, datetime, c("date", "time"), sep = " ", remove = FALSE)
+names(pi_dt) <- gsub(".*\\|", "", names(pi_dt))
+
+# [33] "SS4_SFAN1_MODBUSERROR"           "SS4_SFAN1_ONOFF"                
+# [35] "SS4_SFAN1_POWER"                 "SS4_SFAN1_REF"                  
+# [37] "SS4_SFAN1_RESET"                 "SS4_SFAN1_SPEED"  
+```
+
+Evaluate the model discrepancy in different scenarias (operation setpoints)
+
+```{r}
+path_idfs <- fs::dir_ls(here("data", "idf", "new_set"), recurse = TRUE, regexp = "set7_zone.*\\.idf")
+# path_epws <- fs::dir_ls(here("data", "idf", "new_set"), recurse = TRUE, regexp = ".*sbb2\\.epw")
+path_epws <- fs::dir_ls(here("data", "idf", "new_set"), recurse = TRUE, glob = "*.epw")
+
+epw_dt <- epw$data()
+
+# visualize the DBT in free-floating period
+p_epw_DBT_ff <- ggplot(epw_dt[datetime >= as_datetime("2021-06-19 00:00:00") & datetime <= as_datetime("2021-06-21 00:06:00"), ], 
+                       aes(as.numeric(hour), dry_bulb_temperature)) +
+  geom_line() +
+  geom_point(size=4, alpha=0.5) +
+  facet_wrap(~as.factor(day))
+
+# ggsave(filename = here::here("pic/pi_CHW_clg_rate2.jpg"),
+#        plot = p_setpoint, dpi = 150, height = 6, width = 9)
+
+p_epw_DBT_ff1 <- ggplot(epw_dt1[datetime >= as_datetime("2021-06-19 00:00:00") & datetime <= as_datetime("2021-06-21 00:06:00"), ], 
+                       aes(as.numeric(hour), dry_bulb_temperature)) +
+  geom_line() +
+  geom_point(size=4, alpha=0.5) +
+  facet_wrap(~as.factor(day))
+
+ggsave(filename = here::here("pic/epw_DBT_ff_exp.jpg"),
+       plot = p_epw_DBT_ff_exp, dpi = 150, height = 6, width = 9)
+
+p_epw_DBT_ff2 <- ggplot(epw_dt2[datetime >= as_datetime("2021-06-19 00:00:00") & datetime <= as_datetime("2021-06-21 00:06:00"), ], 
+                       aes(as.numeric(hour), dry_bulb_temperature)) +
+  geom_line() +
+  geom_point(size=4, alpha=0.5) +
+  facet_wrap(~as.factor(day))
+
+p_epw_DBT_ff3 <- ggplot(epw_dt3[datetime >= as_datetime("2021-06-19 00:00:00") & datetime <= as_datetime("2021-06-21 00:06:00"), ], 
+                       aes(as.numeric(hour), dry_bulb_temperature)) +
+  geom_line() +
+  geom_point(size=4, alpha=0.5) +
+  facet_wrap(~as.factor(day))
+
+p_epw_DBT_ff_exp <- ggplot(exp_wea[datetime >= as_datetime("2021-06-19 00:00:00") & datetime <= as_datetime("2021-06-21 00:06:00"), ], 
+                       aes(as.numeric(hour), temp_mean)) +
+  geom_line() +
+  geom_point(size=4, alpha=0.5) +
+  facet_wrap(~as.factor(date))
+
+fwrite(exp_wea, file = here("data", "csv", "exp_wea.csv"))
+
+# Check the DBT during free-floating
+p_epw_DBT_ff <- ggplot(epw_dt[datetime >= as_datetime("2021-06-19 01:00:00") & datetime <= as_datetime("2021-06-21 06:00:00"), ], 
+                       aes(as.numeric(hour), dry_bulb_temperature)) +
+  geom_line() +
+  geom_point(size=4, alpha=0.5) +
+  facet_wrap(~as.factor(day))
+
+# Check the DBT during fan characterization
+p_epw_DBT_FanTest <- ggplot(epw_dt[datetime >= as_datetime("2021-05-21 00:00:00") & datetime <= as_datetime("2021-05-21 23:00:00"), ], 
+                       aes(as.numeric(hour), dry_bulb_temperature)) +
+  geom_line() +
+  geom_point(size=4, alpha=0.5) +
+  facet_wrap(~as.factor(day))
+
+p_epw_DBT_CommonDay <- ggplot(epw_dt[datetime >= as_datetime("2021-03-21 01:00:00") & datetime <= as_datetime("2021-03-21 23:00:00"), ], 
+                       aes(as.numeric(hour), dry_bulb_temperature)) +
+  geom_line() +
+  geom_point(size=4, alpha=0.5) +
+  facet_wrap(~as.factor(day))
+
+# ------------------------------------------------------------------------------
+# path_epw <- here::here("data/epw/SGP_Singapore_sbb3.epw")
+# epw_sbb3 <- read_epw(path_epw)
+# epw_sbb3_dt <- epw_sbb3$data(start_year = 2021)
+
+# epw$add(d, after = 0L, realyear = TRUE)
+
+p_epw_DBT_ff2 <- ggplot(epw_sbb3_dt[datetime >= as_datetime("2021-06-19 01:00:00") & datetime <= as_datetime("2021-06-21 06:00:00"), ], 
+                       aes(as.numeric(hour), dry_bulb_temperature)) +
+  geom_line() +
+  geom_point(size=4, alpha=0.5) +
+  facet_wrap(~as.factor(day))
+
+p_epw_DBT_FanTest2 <- ggplot(epw_sbb3_dt[datetime >= as_datetime("2021-05-21 00:00:00") & datetime <= as_datetime("2021-05-21 23:00:00"), ], 
+                       aes(as.numeric(hour), dry_bulb_temperature)) +
+  geom_line() +
+  geom_point(size=4, alpha=0.5) +
+  facet_wrap(~as.factor(day))
+
+p_epw_DBT_CommonDay2 <- ggplot(epw_sbb3_dt[datetime >= as_datetime("2021-03-21 01:00:00") & datetime <= as_datetime("2021-03-21 23:00:00"), ], 
+                       aes(as.numeric(hour), dry_bulb_temperature)) +
+  geom_line() +
+  geom_point(size=4, alpha=0.5) +
+  facet_wrap(~as.factor(day))
+
+# Temporary code for checking the Troom during the fixed load experiment on 20210628.
+# we are going to calibrate a normal VAV model to match the CHW cooling rate and the fan power in this period
+
+p_check_RoomT <- ggplot2::ggplot(pi_dt, aes(hour, SS5_ROOM3_TEMP)) +
+  geom_point(size=6, alpha=0.5) +
+  geom_line() +
+  # facet_wrap(~model) +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "Room3 zone air temperature [C]") +
+  theme(legend.position = "top")
+
+p_check_CHWClgRate <- ggplot2::ggplot(pi_dt, aes(hour, SS2_AHU1_THERMALPOWER)) +
+  geom_point(size=6, alpha=0.5) +
+  geom_line() +
+  # facet_wrap(~model) +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "CHW Cooling Rate [W]") +
+  theme(legend.position = "top")
+
+pi_dt[, outdoor_air_temp := epw_dt[
+  datetime >= as_datetime(begin_lst[1]) & datetime < as_datetime(end_lst[1]), ]$dry_bulb_temperature]
+
+p_check_Toutdoor <- ggplot2::ggplot(pi_dt, aes(hour, outdoor_air_temp)) +
+  geom_point(size=6, alpha=0.5) +
+  geom_line() +
+  # facet_wrap(~model) +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "Outdoor air temperature [C]") +
+  theme(legend.position = "top")
+
+
+# Need to get combined_dt from functions.r
+combined_dt2 <- select(combined_dt, c(datetime, SS2_AHU1_THERMALPOWER, value))
+combined_dt2_melt <- melt(combined_dt2, id = c("datetime"))
+
+combined_dt2_melt$variable <- gsub("SS2_AHU1_THERMALPOWER", "mea_ClgCoil_ClgRate", combined_dt2_melt$variable)
+combined_dt2_melt$variable <- gsub("value", "sim_ClgCoil_ClgRate", combined_dt2_melt$variable)
+combined_dt2_melt$hour <- hour(combined_dt2_melt$datetime)
+
+# combined_dt2_melt[grep("SS2_AHU1_THERMALPOWER", combined_dt2_melt$variable), ]$variable <- "mea_ClgCoil_ClgRate"
+
+p_check_clgcoilclgrate <- ggplot2::ggplot(combined_dt2_melt, aes(hour, value, color = variable)) +
+  geom_point(size=6, alpha=0.5) +
+  geom_line() +
+  # facet_wrap(~model) +
+  # facet_wrap(~as.factor(date), scales = "free_x") +
+  labs(x = "Hour", y = "Clg Coil Clg Rate [kW]") +
+  theme(legend.position = "top")
+
+
+
+```
+

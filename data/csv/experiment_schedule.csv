@@ -1,0 +1,72 @@
+wp,activity,start_date,end_date,duration,start_time,end_time,step,note
+Set 0 (a) - Prelimary tests,0.1 Cooling capacity (2000W),2021/05/10,2021/05/10,1,10:20,11:45,cooling capacity test,Use Room4; 2.1kW heater; setpoint = 22C; max flow rate = 600 chm; window sealed; lowest room temperature @25C
+Set 0 (a) - Prelimary tests,0.2 Cooling capacity (1000W),2021/05/10,2021/05/10,1,11:45,14:35,cooling capacity test,Use Room4; 2.1kW heater; setpoint = 22C; max flow rate = 900 chm; window sealed;lowest room temperature @24.3C
+Set 0 (a) - Prelimary tests,0.2 Cooling capacity (1000W),2021/05/10,2021/05/10,1,14:35,14:45,cooling capacity test,Use Room4; 1.05kW heater; setpoint = 22C; max flow rate = 900 chm; window sealed; lowest room temperature @22.7C
+Set 1 - Air tightness & ventilation,1.0 Air tightness (free-float),2021/05/11,2021/05/11,1,11:40,12:00,background concentration test,
+Set 1 - Air tightness & ventilation,1.0 Air tightness (free-float),2021/05/11,2021/05/11,1,12:07,15:08,decay test,15s injection of SF6; no fan; fan outlet sealed
+Set 1 - Air tightness & ventilation,1.0 Air tightness (free-float),2021/05/11,2021/05/11,1,15:15,18:00,preparation for next experiment,"close door/open door, 70ppm to 1.4ppm, then close the door to mix them up"
+Set 1 - Air tightness & ventilation,1.1 Air tightness (free-float),2021/05/11,2021/05/11,1,18:04,18:04,injection,"5s injection of SF6; with 3 desk fans; no AC, fan outlet sealed"
+Set 1 - Air tightness & ventilation,1.1 Air tightness (free-float),2021/05/11,2021/05/11,1,18:04,19:34,decay test,34ppm to 24ppm
+Set 1 - Air tightness & ventilation,1.1 Air tightness (free-float),2021/05/12,2021/05/12,1,9:30,11:29,preparation for next experiment,"open the door, take off the sealing/close the door, 24ppm to 0.1ppm, then close the door to mix them up"
+Set 1 - Air tightness & ventilation,1.2 Air tightness (free-float),2021/05/12,2021/05/12,1,11:52,11:52,injection,"5s injection of SF6; with 3 desk fans; no AC, fan outlet unsealed"
+Set 1 - Air tightness & ventilation,1.2 Air tightness (free-float),2021/05/12,2021/05/12,1,11:52,13:56,decay test,33ppm to 25ppm
+Set 1 - Air tightness & ventilation,1.2 Air tightness (free-float),2021/05/12,2021/05/12,1,14:02,16:03,preparation for next experiment,"open the door, with 3 desk fans, with AC, heater 1040W; fan 34W, setpoint @24C; fan outlet unsealed; from 25ppm to 0.38ppm"
+Set 1 - Air tightness & ventilation,1.3 Ventilation rate (1000W @ 24C),2021/05/12,2021/05/12,1,16:04,16:04,injection,"5s injection of SF6; with 3 desk fans; with AC, fan outlet unsealed; @24.8C"
+Set 1 - Air tightness & ventilation,1.3 Ventilation rate (1000W @ 24C),2021/05/12,2021/05/12,1,16:04,18:04,decay test,"close door/open door, 33ppm to 0.87ppm, finished"
+Set 1 - Air tightness & ventilation,1.4 Ventilation rate (500W @ 24C),2021/05/13,2021/05/13,1,10:10,10:48,background concentration test,"close door; with 3 desk fans, with AC, heater 540W; fan 34W, setpoint=24; fan outlet unsealed"
+Set 1 - Air tightness & ventilation,1.4 Ventilation rate (500W @ 24C),2021/05/13,2021/05/13,1,10:49,10:49,injection,"5s injection of SF6; with 3 desk fans; with AC @24,  heater 540W; fan 34W, fan outlet unsealed"
+Set 1 - Air tightness & ventilation,1.4 Ventilation rate (500W @ 24C),2021/05/13,2021/05/13,1,10:49,13:31,decay test,25ppm to 0.4ppm
+Set 1 - Air tightness & ventilation,1.5 Ventilation rate (500W @ 26C),2021/05/13,2021/05/13,1,13:34,14:15,change setpoint and background concentration test,change setpoint to 26C
+Set 1 - Air tightness & ventilation,1.5 Ventilation rate (500W @ 26C),2021/05/13,2021/05/13,1,14:15,14:15,injection,"5s injection of SF6; with 3 desk fans; with AC @26C,  heater 540W; fan 34W, fan outlet unsealed"
+Set 1 - Air tightness & ventilation,1.5 Ventilation rate (500W @ 26C),2021/05/13,2021/05/13,1,14:15,17:00,decay test,28ppm to 0.3ppm
+Set 1 - Air tightness & ventilation,1.6 Ventilation rate (500W @ 26C),2021/05/14,2021/05/14,1,10:15,10:15,injection,"5s injection of SF6; with 3 desk fans; with AC @26C, with heater 1050W; fan outlet sealed; "
+Set 1 - Air tightness & ventilation,1.6 Ventilation rate (500W @ 26C),2021/05/14,2021/05/14,1,10:15,12:52,open the door,
+Set 2 - HVAC characterization,2.1  540W at 22C w/ fan @ 10-50Hz SAT@13C,2021/05/15,2021/05/15,1,9:35,9:35,internal heat gain,Turn on the heater 550W
+Set 2 - HVAC characterization,2.1  540W at 22C w/ fan @ 10-50Hz SAT@13C,2021/05/15,2021/05/15,1,9:57,11:30,operation condition,"Change setpont=22, SAT@13C; maximum air flow rate=600cmh; water flow rate=auto"
+Set 2 - HVAC characterization,2.1  540W at 22C w/ fan @ 10-50Hz SAT@13C,2021/05/15,2021/05/15,1,11:30,11:30,change maxmum air flow rate,"Change setpont=22, SAT @13C; maximum air flow rate=900cmh; water flow rate=auto"
+Set 2 - HVAC characterization,2.2  540W at 22C w/ fan @ 10-50Hz uncontrolled SAT,2021/05/15,2021/05/15,1,15:50,15:50,turn off PID control,water flow rate PID control; water flow rate=maximum
+Set 2 - HVAC characterization,2.3  540W at 22C w/ fan @ 10-50Hz SAT@13C,2021/05/16,2021/05/16,1,13:08,13:08,change schedule,maximum  air flow rate at noon
+Set 2 - HVAC characterization,2.4  540W at 22C w/ fan @ 10-50Hz SAT@13C (Variable Fan Speed),2021/05/17,2021/05/17,1,9:45,17:00,change SAT,"turn on water flow PID control, SA temperature setpoint @13C;  1 heater 540W; 4 lights 223W"
+Set 2 - HVAC characterization,2.5  540W at 22C w/ fan @ 10-50Hz SAT@15C,2021/05/18,2021/05/18,1,10:03,17:00,change SAT,"with PID control, SA temperature setpoint @15C;  1 heater 540W; 4 lights 223W"
+Set 2 - HVAC characterization,2.6  540W at 24C w/ fan @ 10-50Hz SAT@17C,2021/05/19,2021/05/19,1,10:00,22:00,change SAT and Room SP,"with PID control, SA temperature setpoint @17C;  room temperature setpoint @24C; 1 heater 540W; 4 lights 223W"
+Set 2 - HVAC characterization,2.7  540W at 24C w/ fan @ 10-50Hz SAT@19C,2021/05/20,2021/05/20,1,10:00,22:00,change SAT,"with PID control, SA temperature setpoint @19C;  room temperature setpoint @24C; 1 heater 540W; 4 lights 223W"
+Set 2 - HVAC characterization,2.8  540W at 22C w/ fan @ 10-50Hz SAT@11C,2021/05/21,2021/05/23,3,10:00,22:00,change SAT and Room SP,"with PID control, SA temperature setpoint @11C;  room temperature setpoint @22C; 1 heater 540W; 4 lights 223W"
+Set 2 - HVAC characterization,2.9  540W at 24C w/ fan @ 10-50Hz SAT@13C,2021/05/24,2021/05/24,1,10:32,22:00,change SAT and Room SP,"with PID control, SA temperature setpoint @13C;  room temperature setpoint @24C; 1 heater 540W; 4 lights 223W"
+Set 2 - HVAC characterization,2.10  540W at 26C w/ fan @ 10-50Hz SAT@13C,2021/05/25,2021/05/26,2,16:30,22:00,change Room SP,"with PID control, SA temperature setpoint @13C;  room temperature setpoint @26C; 1 heater 540W; 4 lights 223W (use data after 18:00 because the heater was turned off by the staff before 17:30)"
+Set 2 - HVAC characterization,2.11  540W at 26C w/ fan @ 10-50Hz SAT@15C,2021/05/27,2021/05/30,4,10:45,22:00,change SAT,"with PID control, SA temperature setpoint @15C;  room temperature setpoint @26C; 1 heater 540W; 4 lights 223W"
+Set 2 - HVAC characterization,2.12  1040W at 26C w/ fan @ 10-50Hz SAT@15C,2021/05/31,2021/05/31,1,11:45,22:00,change internal heat gain,"with PID control, SA temperature setpoint @15C;  room temperature setpoint @26C; 1 heater 1050W; 4 lights 223W"
+Set 0 (b) - Intrumentation,0.3 Install heat flux and temp sensors,2021/06/02,2021/06/15,14,10:00,12:00,sensors installation,
+Set 3 - Thermal performance,3.1  500W @ 24C,2021/06/15,2021/06/15,1,13:00,13:00,turn on the HVAC system,"without fan speed PID control, SA temperature setpoint @15C;  room temperature setpoint @26C; 1 heater 540W; 5 lights 223W; fan frequency @ 50Hz"
+Set 3 - Thermal performance,3.1  500W @ 24C,2021/06/15,2021/06/15,1,13:54,13:54,"RoomT is reaching 26.4, reduce the fan frequency to 30 Hz","without fan speed PID control, SA temperature setpoint @15C;  room temperature setpoint @26C; 1 heater 540W; 5 lights 223W; fan frequency @ 30Hz"
+Set 3 - Thermal performance,3.1  500W @ 24C,2021/06/15,2021/06/15,1,14:00,14:10,install 1 HOBO (mini) outside room3,
+Set 3 - Thermal performance,3.1  500W @ 24C,2021/06/15,2021/06/15,1,19:42,19:42,adjust the indoor temp SP from 26C to 24C,"without fan speed PID control, SA temperature setpoint @15C;  room temperature setpoint @24C; 1 heater 540W; 5 lights 223W, Fan speed @30Hz"
+Set 3 - Thermal performance,3.1  500W @ 24C,2021/06/16,2021/06/16,1,15:40,15:40,turn off the AC and do programming,AC is off
+Set 3 - Thermal performance,3.1  500W @ 24C,2021/06/18,2021/06/18,1,14:00,14:10,install 2HOBOs (big),"one is outside room3, the other one is on the reception desk (20488758)"
+Set 3 - Thermal performance,3.1  500W @ 24C,2021/06/18,2021/06/18,1,14:35,14:35,restore the PI system,programming is done
+Set 3 - Thermal performance,3.1  500W @ 24C,2021/06/18,2021/06/18,1,16:57,16:57,turn on the HVAC system,"AC is on. Without fan speed PID control, SA temperature setpoint @15C;  room temperature setpoint @24C; 1 heater 540W; 5 lights 223W"
+Set 3 - Thermal performance,3.1  500W @ 24C,2021/06/18,2021/06/18,1,17:53,17:53,remove indoor heat source,"without fan speed PID control, SA temperature setpoint @15C;  room temperature setpoint @24C; no artificial heat source"
+Set 3 - Thermal performance,3.1  500W @ 24C,2021/06/18,2021/06/18,1,20:00,20:14,turn off the HVAC system,no AC; no artificial heat source; free-floating test starts
+Set 4 - Free-floating condition,4.1 free-floating started from 24C,2021/06/18,2021/06/21,4,20:14,6:00,ongoing free-floating test,no AC; no artificial heat source; free-floating test is ongoing
+Set 4 - Free-floating condition,4.1 free-floating started from 24C,2021/06/21,2021/06/21,1,10:15,10:18,turn on the HVAC system,no AC; no artificial heat source; free-floating test ends
+Set 3 - Thermal performance,3.1  500W @ 24C,2021/06/21,2021/06/21,1,10:45,10:50,"add internal heat sources, preparation for test ","without fan speed PID control, Fan speed @45Hz, SA temperature setpoint @15C;  room temperature setpoint @24C; 1 heater 530W; 5 lights 5*223W"
+Set 3 - Thermal performance,3.1  500W @ 24C,2021/06/21,2021/06/21,1,13:10,13:20,"Stop HOBO test, read out the data",
+Set 3 - Thermal performance,3.1  500W @ 24C,2021/06/21,2021/06/21,1,15:20,15:30,Install HOBO to collect more data for AC period,
+Set 3 - Thermal performance,3.1  500W @ 24C,2021/06/21,2021/06/21,1,16:15,17:00,Restore the loose RTD sensors,the data might be not stable during this period
+Set 3 - Thermal performance,3.1  500W @ 24C,2021/06/22,2021/06/22,1,23:00,23:10,"Stop HOBO test, read out the data",
+Set 3 - Thermal performance,3.1  500W @ 24C,2021/06/21,2021/06/24,4,10:00,19:00,Thermal performance test,
+Set 3 - Thermal performance,3.1  500W @ 24C,2021/06/24,2021/06/24,1,19:18,19:20,remove indoor heat source,
+Set 3 - Thermal performance,3.2  0W @ 21C,2021/06/25,2021/06/27,3,8:45,11:00,Modify the HVAC system and stablization,
+Set 3 - Thermal performance,3.2  0W @ 21C,2021/06/24,2021/06/27,3,11:00,20:00,"Thermal performance test@21C. Fan speed@50Hz, variable SAT ",
+Set 5 - Solar irradiation impact evaluation,5.1  500W @ 24C,2021/06/21,2021/06/24,4,19:00,19:00,thermal performance test @24C,
+Set 5 - Solar irradiation impact evaluation,5.2  0W @ 21C,2021/06/25,2021/06/27,3,11:00,20:00,thermal performance test @21C,
+Set 6 - Internal load characterization,6.1 540W @24C fixed internal loads,2021/06/28,2021/06/28,1,9:00,19:00,"540W, Room@24C, SAT@15C, FAN@35Hz",8:00-18:00 fixed internal load
+Set 6 - Internal load characterization,6.2 540W @26C fixed internal loads,2021/06/29,2021/06/29,1,8:00,18:00,"540W, Room@26C, SAT@15C, FAN@30Hz",8:00-18:00 fixed internal load
+Set 6 - Internal load characterization,6.3 540W @26C typical internal loads,2021/06/30,2021/06/30,1,8:00,18:00,"540W, Room@26C, SAT@19C, FAN@30Hz",8:00-12:00 plug load is on; 12:00-14:00 plug load is off; 14:00-18:00 plug load is on
+Set 6 - Internal load characterization,6.4 540W @24C typical internal loads,2021/07/01,2021/07/01,1,8:00,18:00,"540W, Room@24C, SAT@15C, FAN@40Hz",8:00-12:00 plug load is on; 12:00-14:00 plug load is off; 14:00-18:00 plug load is on
+Set 6 - Internal load characterization,6.3 540W @26C typical internal loads (rerun),2021/07/02,2021/07/02,1,8:00,18:00,"540W, Room@26C, SAT@15C, FAN@30Hz (rerun)","8:00-12:00 plug load is on; 12:00-14:00 plug load is off; 14:00-18:00 plug load is on (rerun, previous SAT@19C instead of 15C)"
+Set 2 - HVAC characterization,2.13 540W at 24C w/ fan @ 10-50Hz SAT@15C,2021/07/03,2021/07/04,2,8:00,22:00,SAT@15C; setpoint temperature@26C; heater 540W; 5 lights 223W 225W per each TOTAL,data before 2021-07-03 is incorrect cause the fan speed is not set as required
+,,,,,,,,
+Pending,,Pending,,,,,,
+Set 6 - Internal load characterization,6.1 540W @24C fixed internal loads (rerun),2021/07/05,2021/07/05,1,8:00,18:00,"540W, Room@24C, SAT@15C, FAN@40Hz (rerun)","8:00-18:00 fixed internal load (rerun, previous fan speed@35Hz instead of 40Hz"
+Set 6 - Internal load characterization,6.5 540W @24C random internal loads,2021/07/06,2021/07/06,1,8:00,18:00,"540W, Room@24C, SAT@15C, FAN@40Hz, random on/off","8:00-18:00 Random Load@101,000,101,01"
+Set 6 - Internal load characterization,6.6 540W @26C random internal loads,2021/07/07,2021/07/07,1,8:00,18:00,"540W, Room@26C, SAT@15C, FAN@30Hz, random on/off","8:00-18:00 Random Load@010,110,011,01"
