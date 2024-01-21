@@ -27,18 +27,18 @@ Please cite this compendium as:
 ./
 ├── requirement.txt                               # File containing the list of Python packages the project uses
 ├── R                                             # 
-│   ├── measurement.R                             # R script for measurement data preprocessing
+│   ├── measurement.R                             # R script for measurement data preprocessing, including ACH calculation & thermal conductance cal & EPW weather file generation
 │   ├── uncertainty.R                             # R script for measurement uncertainty analysis
-│   ├── models.R                                  # R script for baseline EnergyPlus model development by incorporating different levels of information 
+│   ├── baseline_idfs.Rmd                         # R script for baseline EnergyPlus model development by incorporating different levels of information 
 │   ├── validation.R                              # R script for validating the predictive accuracy of Models 1 to 6 against measured data
 │   └── ECM_sim.R                                 # R script for ECM analysis using parametric simulations
-|   └── ECM_sim.R                                 # R script for model predictive performance evaluation and result visualization
+|   └── evaluation.R                                 # R script for model predictive performance evaluation and result visualization
 ├── data                                          # 
 │   ├── csv                                       # Dataset summarizing papers reviewed
 │   │   ├── sf6.csv                               # SF6 concentration measurements
 │   │   ├── heat_flux.csv                         # Heat-flux sensor measurements
-│   │   ├── pi.csv                                # Energy Management System data and logged data set during the experiment period
-│   │   └── schedule.csv                          # Experiment schedule
+│   │   ├── pi_data.csv                           # Energy Management System data and logged data set during the experiment period
+│   │   └── experiment_schedule.csv               # Experiment schedule
 │   └── idf                                       # 
 │       ├── epwfiles                              # EnergyPlus weather files
 │       │   └── ...                               # 
@@ -47,7 +47,7 @@ Please cite this compendium as:
 │       └── idffiles                              # Baseline IDFs
 │           └── ...                               #                               
 └── paper                                         # 
-    ├── pic                                       # Figures used in the paper
+    ├── figures                                   # Figures used in the paper
     │   └── ...                                   #
     ├── tex                                       # LaTeX source document
     └── bib                                       # Bibliographic information file 
