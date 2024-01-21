@@ -30,9 +30,9 @@ Please cite this compendium as:
 │   ├── measurement.R                             # R script for measurement data preprocessing, including ACH calculation & thermal conductance cal & EPW weather file generation
 │   ├── uncertainty.R                             # R script for measurement uncertainty analysis
 │   ├── baseline_idfs.Rmd                         # R script for baseline EnergyPlus model development by incorporating different levels of information 
-│   ├── validation.R                              # R script for validating the predictive accuracy of Models 1 to 6 against measured data
+│   ├── model_accuracy_validation.R               # R script for validating the predictive accuracy of Models 1 to 6 against measured data
 │   └── ECM_sim.R                                 # R script for ECM analysis using parametric simulations
-|   └── evaluation.R                                 # R script for model predictive performance evaluation and result visualization
+|   └── model_evaluation.R                        # R script for model predictive performance evaluation and result visualization
 ├── data                                          # 
 │   ├── csv                                       # Dataset summarizing papers reviewed
 │   │   ├── sf6.csv                               # SF6 concentration measurements
